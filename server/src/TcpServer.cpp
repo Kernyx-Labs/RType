@@ -17,6 +17,9 @@ void TcpServer::stop() {
     running_ = false;
     asio::error_code ec;
     acceptor_.close(ec);
+
+    // Lock to safely iterate and clear clients_
+    std::lock_guard<std::mutex> lock(clientsMutex_);
     for (auto& c : clients_) {
         if (c && c->is_open()) c->close(ec);
     }
@@ -24,6 +27,8 @@ void TcpServer::stop() {
 }
 
 void TcpServer::broadcastStartGame() {
+    // Lock to safely iterate clients_
+    std::lock_guard<std::mutex> lock(clientsMutex_);
     for (auto& c : clients_) {
         if (c && c->is_open())
             sendHeader(c, rtype::net::MsgType::StartGame);
@@ -34,7 +39,10 @@ void TcpServer::doAccept() {
     auto sock = std::make_shared<asio::ip::tcp::socket>(acceptor_.get_executor());
     acceptor_.async_accept(*sock, [self = shared_from_this(), sock](std::error_code ec) {
         if (!ec && self->running_) {
-            self->clients_.insert(sock);
+            {
+                std::lock_guard<std::mutex> lock(self->clientsMutex_);
+                self->clients_.insert(sock);
+            }
             self->startSession(sock);
         }
         if (self->running_) self->doAccept();
@@ -46,7 +54,11 @@ void TcpServer::startSession(SocketPtr sock) {
     // Read Hello with username (<=15 bytes)
     auto hdrBuf = std::make_shared<std::array<char, sizeof(rtype::net::Header)>>();
     asio::async_read(*sock, asio::buffer(*hdrBuf), [self = shared_from_this(), sock, hdrBuf](std::error_code ec, std::size_t) {
-        if (ec) { self->clients_.erase(sock); return; }
+        if (ec) {
+            std::lock_guard<std::mutex> lock(self->clientsMutex_);
+            self->clients_.erase(sock);
+            return;
+        }
         auto hdr = *reinterpret_cast<rtype::net::Header*>(hdrBuf->data());
         if (hdr.version != rtype::net::ProtocolVersion || hdr.type != rtype::net::MsgType::Hello) {
             return;
@@ -77,6 +89,7 @@ void TcpServer::startSession(SocketPtr sock) {
     // clean on closure
     sock->async_wait(asio::ip::tcp::socket::wait_error,
         [self = shared_from_this(), sock](std::error_code) {
+            std::lock_guard<std::mutex> lock(self->clientsMutex_);
             self->clients_.erase(sock);
         });
 }
