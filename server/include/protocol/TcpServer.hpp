@@ -3,6 +3,7 @@
 #include <unordered_set>
 #include <memory>
 #include <functional>
+#include <mutex>
 #include "common/Protocol.hpp"
 
 namespace rtype::server { class UdpServer; }
@@ -37,6 +38,7 @@ private:
 private:
     asio::ip::tcp::acceptor acceptor_;
     std::unordered_set<SocketPtr> clients_;
+    std::mutex clientsMutex_;  // Protects clients_ from concurrent access
     bool running_{false};
 
     IssueTokenFn issueToken_{};

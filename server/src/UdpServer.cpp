@@ -8,6 +8,10 @@ UdpServer::UdpServer(asio::io_context& io, unsigned short port)
     : io_(io)
     , socket_(io_, asio::ip::udp::endpoint(asio::ip::udp::v4(), port))
 {
+    try {
+        asio::socket_base::receive_buffer_size opt(1024 * 1024);
+        socket_.set_option(opt);
+    } catch (...) {}
 }
 
 UdpServer::~UdpServer() { stop(); }

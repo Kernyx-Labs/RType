@@ -4,6 +4,7 @@
 #include <cstring>
 #include <chrono>
 #include <iostream>
+#include <unordered_set>
 
 namespace client { namespace ui {
 
@@ -18,29 +19,75 @@ void Screens::handleNetPacket(const char* data, std::size_t n) {
         p += sizeof(rtype::net::StateHeader);
         std::size_t count = sh->count;
         if (n < sizeof(rtype::net::Header) + sizeof(rtype::net::StateHeader) + count * sizeof(rtype::net::PackedEntity)) return;
-        _entities.clear();
-        _entities.reserve(count);
+        // Reconciliation: update or insert all received entities; mark as seen
         auto* arr = reinterpret_cast<const rtype::net::PackedEntity*>(p);
-        std::size_t players = 0, enemies = 0, bullets = 0;
+        std::unordered_set<unsigned> seenIds;
+        seenIds.reserve(count);
+        double nowSec = GetTime();
         for (std::size_t i = 0; i < count; ++i) {
             PackedEntity e{};
             e.id = arr[i].id;
             e.type = static_cast<unsigned char>(arr[i].type);
             e.x = arr[i].x; e.y = arr[i].y; e.vx = arr[i].vx; e.vy = arr[i].vy;
             e.rgba = arr[i].rgba;
-            _entities.push_back(e);
-            if (e.type == 1) ++players; else if (e.type == 2) ++enemies; else if (e.type == 3) ++bullets;
+            _entityById[e.id] = e;
+            _missedById[e.id] = 0;
+            _lastSeenAt[e.id] = nowSec;
+            seenIds.insert(e.id);
         }
-        // Debug print: throttle to ~1/sec
-        static auto last = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count() > 1000) {
-            std::cout << "[client] State: total=" << count
-                      << " players=" << players
-                      << " enemies=" << enemies
-                      << " bullets=" << bullets << std::endl;
-            last = now;
+        // Increment miss counters for any id not seen in this snapshot
+        std::vector<unsigned> toErase;
+        toErase.reserve(_entityById.size());
+        for (const auto& kv : _entityById) {
+            unsigned id = kv.first;
+            if (seenIds.find(id) == seenIds.end()) {
+                int missed = (_missedById.count(id) ? _missedById[id] : 0) + 1;
+                _missedById[id] = missed;
+                double lastSeen = (_lastSeenAt.count(id) ? _lastSeenAt[id] : nowSec);
+                double elapsed = nowSec - lastSeen;
+                unsigned char type = kv.second.type;
+                double ttl = (type == 2 /* Enemy */) ? _expireSecondsEnemy : _expireSecondsDefault;
+                if (missed >= _missThreshold && elapsed >= ttl) toErase.push_back(id);
+            }
         }
+        for (unsigned id : toErase) {
+            _entityById.erase(id);
+            _missedById.erase(id);
+            _lastSeenAt.erase(id);
+        }
+        // Rebuild render list with a stable ordering: players, bullets, powerups, enemies
+        _entities.clear();
+        _entities.reserve(_entityById.size());
+        auto appendByType = [&](unsigned char type) {
+            for (const auto& kv : _entityById) {
+                if (kv.second.type == type) _entities.push_back(kv.second);
+            }
+        };
+        appendByType(1); // Player
+        appendByType(3); // Bullet
+        appendByType(4); // Powerup (if used)
+        appendByType(2); // Enemy
+    } else if (h->type == rtype::net::MsgType::Despawn) {
+        // Server explicitly told us to remove an entity - do it immediately
+        const char* p = data + sizeof(rtype::net::Header);
+        if (n < sizeof(rtype::net::Header) + sizeof(std::uint32_t)) return;
+        std::uint32_t entityId;
+        std::memcpy(&entityId, p, sizeof(entityId));
+        _entityById.erase(entityId);
+        _missedById.erase(entityId);
+        _lastSeenAt.erase(entityId);
+        // Rebuild render list immediately
+        _entities.clear();
+        _entities.reserve(_entityById.size());
+        auto appendByType = [&](unsigned char type) {
+            for (const auto& kv : _entityById) {
+                if (kv.second.type == type) _entities.push_back(kv.second);
+            }
+        };
+        appendByType(1); // Player
+        appendByType(3); // Bullet
+        appendByType(4); // Powerup
+        appendByType(2); // Enemy
     } else if (h->type == rtype::net::MsgType::Roster) {
         const char* p = data + sizeof(rtype::net::Header);
         if (n < sizeof(rtype::net::Header) + sizeof(rtype::net::RosterHeader)) return;

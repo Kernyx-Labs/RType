@@ -12,33 +12,13 @@
 #include <chrono>
 #include <string>
 #include "common/Protocol.hpp"
+#include <unordered_set>
 using namespace client::ui;
 
 namespace {
-    struct UdpClientGlobals {
-        std::unique_ptr<asio::io_context> io;
-        std::unique_ptr<asio::ip::udp::socket> sock;
-        asio::ip::udp::endpoint server;
-
-        // ✅ NEW: TCP control connection
-        std::unique_ptr<asio::ip::tcp::socket> tcp;
-        bool tcpReady = false;
-        bool startGame = false;
-    } g;
-
     static constexpr float kEnemyHitboxScale = 1.25f;
     static constexpr float kEnemyAabbW = 27.0f;
     static constexpr float kEnemyAabbH = 18.0f;
-}
-
-void Screens::leaveSession() {
-    // Gracefully leave any active multiplayer session
-    teardownNet();
-    _connected = false;
-    _entities.clear();
-    _serverReturnToMenu = false;
-    // Stop local singleplayer sandbox if running
-    shutdownSingleplayerWorld();
 }
 
 bool Screens::assetsAvailable() const {
@@ -222,53 +202,6 @@ void Screens::drawMultiplayer(ScreenState& screen, MultiplayerForm& form) {
     }
 }
 
-bool Screens::autoConnect(ScreenState& screen, MultiplayerForm& form) {
-    // Mimic the Connect button path but callable programmatically
-    bool canConnect = !form.username.empty() && !form.serverAddress.empty() && !form.serverPort.empty();
-    if (!canConnect) {
-        _statusMessage = std::string("Missing host/port/name for autoconnect.");
-        return false;
-    }
-    try {
-        _username = form.username;
-        _serverAddr = form.serverAddress;
-        _serverPort = form.serverPort;
-        _selfId = 0;
-        _playerLives = 4;
-        _gameOver = false;
-        _otherPlayers.clear();
-        // TCP handshake to get UDP port
-        disconnectTcp();
-        if (!connectTcp()) {
-            _statusMessage = std::string("TCP connection failed.");
-            disconnectTcp();
-            return false;
-        }
-        // Setup UDP connection
-        teardownNet();
-        ensureNetSetup();
-        // Wait for roster/state packets
-        bool ok = waitHelloAck(1.0);
-        if (ok) {
-            _statusMessage = std::string("Player Connected.");
-            _connected = true;
-            screen = ScreenState::Waiting;
-            return true;
-        } else {
-            _statusMessage = std::string("Connection failed.");
-            teardownNet();
-            disconnectTcp();
-            return false;
-        }
-    } catch (const std::exception& e) {
-        logMessage(std::string("Exception: ") + e.what(), "ERROR");
-        _statusMessage = std::string("Error: ") + e.what();
-        teardownNet();
-        disconnectTcp();
-        return false;
-    }
-}
-
 void Screens::drawOptions() {
     int h = GetScreenHeight();
     int baseFont = baseFontFromHeight(h);
@@ -300,147 +233,6 @@ void Screens::drawNotEnoughPlayers(ScreenState& screen) {
     }
 }
 
-// --- Minimal gameplay networking and rendering ---
-
-void Screens::ensureNetSetup() {
-    if (g.io) return;
-
-    g.io = std::make_unique<asio::io_context>();
-
-    // ----- TCP CONNECT FIRST -----
-    try {
-        g.tcp = std::make_unique<asio::ip::tcp::socket>(*g.io);
-        asio::ip::tcp::resolver r(*g.io);
-        auto res = r.resolve(_serverAddr, std::to_string(std::stoi(_serverPort) + 1));
-        asio::connect(*g.tcp, res);
-
-        g.tcpReady = false;
-
-        // Wait max 1 sec for TcpWelcome
-        double start = GetTime();
-        while (!g.tcpReady && GetTime() - start < 1.0) {
-            pumpTcpOnce();
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-
-        if (!g.tcpReady) {
-            logMessage("TCP handshake failed", "ERROR");
-            teardownNet();
-            return;
-        }
-    } catch (...) {
-        logMessage("TCP connection failed", "ERROR");
-        teardownNet();
-        return;
-    }
-
-    // ----- UDP HELLO -----
-    try {
-        g.sock = std::make_unique<asio::ip::udp::socket>(*g.io);
-        g.sock->open(asio::ip::udp::v4());
-        g.sock->non_blocking(true);
-
-        asio::ip::udp::resolver res(*g.io);
-        g.server = *res.resolve(asio::ip::udp::v4(), _serverAddr, _serverPort).begin();
-
-        rtype::net::Header hdr{};
-        hdr.version = rtype::net::ProtocolVersion;
-        hdr.type = rtype::net::MsgType::Hello;
-        hdr.size = static_cast<std::uint16_t>(_username.size());
-
-        std::vector<char> out(sizeof(hdr) + _username.size());
-        std::memcpy(out.data(), &hdr, sizeof(hdr));
-        if (!_username.empty())
-            std::memcpy(out.data()+sizeof(hdr), _username.data(), _username.size());
-
-        g.sock->send_to(asio::buffer(out), g.server);
-    } catch (...) {
-        logMessage("UDP setup failed", "ERROR");
-        teardownNet();
-        return;
-    }
-
-    _connected = true;
-}
-
-void Screens::sendDisconnect() {
-    if (!g.sock) return;
-    rtype::net::Header hdr{};
-    hdr.version = rtype::net::ProtocolVersion;
-    hdr.type = rtype::net::MsgType::Disconnect;
-    hdr.size = 0;
-    std::array<char, sizeof(rtype::net::Header)> buf{};
-    std::memcpy(buf.data(), &hdr, sizeof(hdr));
-    asio::error_code ec;
-    g.sock->send_to(asio::buffer(buf), g.server, 0, ec);
-}
-
-static void pumpTcpOnce() {
-    if (!g.tcp || !g.tcp->is_open()) return;
-
-    rtype::net::Header hdr{};
-    asio::error_code ec;
-
-    g.tcp->non_blocking(true, ec);
-    std::size_t n = g.tcp->read_some(asio::buffer(&hdr, sizeof(hdr)), ec);
-    if (ec || n < sizeof(hdr)) return;
-    if (hdr.version != rtype::net::ProtocolVersion) return;
-
-    if (hdr.type == rtype::net::MsgType::TcpWelcome) {
-        Screens::logMessage("TCP: Welcome ✅");
-        g.tcpReady = true;
-    } else if (hdr.type == rtype::net::MsgType::StartGame) {
-        Screens::logMessage("TCP: StartGame ✅");
-        g.startGame = true;
-    }
-}
-
-void Screens::teardownNet() {
-    // UDP
-    if (g.sock && g.sock->is_open()) {
-        sendDisconnect();
-        asio::error_code ec; g.sock->close(ec);
-    }
-    g.sock.reset();
-
-    // TCP
-    if (g.tcp && g.tcp->is_open()) {
-        asio::error_code ec; g.tcp->close(ec);
-    }
-    g.tcp.reset();
-
-    g.io.reset();
-    _entities.clear();
-    _serverReturnToMenu = false;
-}
-
-void Screens::sendInput(std::uint8_t bits) {
-    if (!g.sock) return;
-    rtype::net::Header hdr{};
-    hdr.version = rtype::net::ProtocolVersion;
-    hdr.type = rtype::net::MsgType::Input;
-    rtype::net::InputPacket ip{}; ip.sequence = 0; ip.bits = bits;
-    hdr.size = sizeof(ip);
-    std::array<char, sizeof(hdr) + sizeof(ip)> buf{};
-    std::memcpy(buf.data(), &hdr, sizeof(hdr));
-    std::memcpy(buf.data() + sizeof(hdr), &ip, sizeof(ip));
-    g.sock->send_to(asio::buffer(buf), g.server);
-}
-
-void Screens::pumpNetworkOnce() {
-    if (!g.sock) return;
-    // Drain a small batch each frame to avoid backlog bursts
-    for (int i = 0; i < 8; ++i) {
-        asio::ip::udp::endpoint from;
-        std::array<char, 8192> in{};
-        asio::error_code ec;
-        std::size_t n = g.sock->receive_from(asio::buffer(in), from, 0, ec);
-        if (ec == asio::error::would_block) break;
-        if (ec || n < sizeof(rtype::net::Header)) break;
-        handleNetPacket(in.data(), n);
-    }
-}
-
 void Screens::handleNetPacket(const char* data, std::size_t n) {
     if (!data || n < sizeof(rtype::net::Header)) return;
     const auto* h = reinterpret_cast<const rtype::net::Header*>(data);
@@ -452,17 +244,75 @@ void Screens::handleNetPacket(const char* data, std::size_t n) {
         p += sizeof(rtype::net::StateHeader);
         std::size_t count = sh->count;
         if (n < sizeof(rtype::net::Header) + sizeof(rtype::net::StateHeader) + count * sizeof(rtype::net::PackedEntity)) return;
-        _entities.clear();
-        _entities.reserve(count);
+        // Reconciliation: update or insert all received entities; mark as seen
         auto* arr = reinterpret_cast<const rtype::net::PackedEntity*>(p);
+        std::unordered_set<unsigned> seenIds;
+        seenIds.reserve(count);
+        double nowSec = GetTime();
         for (std::size_t i = 0; i < count; ++i) {
             PackedEntity e{};
             e.id = arr[i].id;
             e.type = static_cast<unsigned char>(arr[i].type);
             e.x = arr[i].x; e.y = arr[i].y; e.vx = arr[i].vx; e.vy = arr[i].vy;
             e.rgba = arr[i].rgba;
-            _entities.push_back(e);
+            _entityById[e.id] = e;
+            _missedById[e.id] = 0;
+            _lastSeenAt[e.id] = nowSec;
+            seenIds.insert(e.id);
         }
+        // Increment miss counters for any id not seen in this snapshot
+        std::vector<unsigned> toErase;
+        toErase.reserve(_entityById.size());
+        for (const auto& kv : _entityById) {
+            unsigned id = kv.first;
+            if (seenIds.find(id) == seenIds.end()) {
+                int missed = (_missedById.count(id) ? _missedById[id] : 0) + 1;
+                _missedById[id] = missed;
+                double lastSeen = (_lastSeenAt.count(id) ? _lastSeenAt[id] : nowSec);
+                double elapsed = nowSec - lastSeen;
+                unsigned char type = kv.second.type;
+                double ttl = (type == 2 /* Enemy */) ? _expireSecondsEnemy : _expireSecondsDefault;
+                if (missed >= _missThreshold && elapsed >= ttl) toErase.push_back(id);
+            }
+        }
+        for (unsigned id : toErase) {
+            _entityById.erase(id);
+            _missedById.erase(id);
+            _lastSeenAt.erase(id);
+        }
+        // Rebuild render list with a stable ordering: players, bullets, powerups, enemies
+        _entities.clear();
+        _entities.reserve(_entityById.size());
+        auto appendByType = [&](unsigned char type) {
+            for (const auto& kv : _entityById) {
+                if (kv.second.type == type) _entities.push_back(kv.second);
+            }
+        };
+        appendByType(1); // Player
+        appendByType(3); // Bullet
+        appendByType(4); // Powerup (if used)
+        appendByType(2); // Enemy
+    } else if (h->type == rtype::net::MsgType::Despawn) {
+        // Server explicitly told us to remove an entity - do it immediately
+        const char* p = data + sizeof(rtype::net::Header);
+        if (n < sizeof(rtype::net::Header) + sizeof(std::uint32_t)) return;
+        std::uint32_t entityId;
+        std::memcpy(&entityId, p, sizeof(entityId));
+        _entityById.erase(entityId);
+        _missedById.erase(entityId);
+        _lastSeenAt.erase(entityId);
+        // Rebuild render list immediately
+        _entities.clear();
+        _entities.reserve(_entityById.size());
+        auto appendByType = [&](unsigned char type) {
+            for (const auto& kv : _entityById) {
+                if (kv.second.type == type) _entities.push_back(kv.second);
+            }
+        };
+        appendByType(1); // Player
+        appendByType(3); // Bullet
+        appendByType(4); // Powerup
+        appendByType(2); // Enemy
     } else if (h->type == rtype::net::MsgType::Roster) {
         const char* p = data + sizeof(rtype::net::Header);
         if (n < sizeof(rtype::net::Header) + sizeof(rtype::net::RosterHeader)) return;

@@ -104,7 +104,16 @@ void Screens::drawGameplay(ScreenState& screen) {
     if (_entities.empty()) {
         titleCentered("Connecting to game...", (int)(GetScreenHeight()*0.5f), 24, RAYWHITE);
     }
+    double nowSec = GetTime();
     for (auto& e : _entities) {
+        // Extrapolate position if entity stopped updating (prevent freezing)
+        if (_lastSeenAt.count(e.id)) {
+            double elapsed = nowSec - _lastSeenAt[e.id];
+            if (elapsed > 0.05 && elapsed < 2.0) { // Only extrapolate for 50ms-2s gap
+                e.x += e.vx * elapsed;
+                e.y += e.vy * elapsed;
+            }
+        }
         if (e.type == 1) {
             // Player ship
             if (e.id == _selfId && _playerLives <= 0) {

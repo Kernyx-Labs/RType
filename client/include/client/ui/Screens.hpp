@@ -221,6 +221,13 @@ private:
     bool waitHelloAck(double timeoutSec);
     struct PackedEntity { unsigned id; unsigned char type; float x; float y; float vx; float vy; unsigned rgba; };
     std::vector<PackedEntity> _entities;
+    // Entity reconciliation buffers: avoid dropping entities on transient packet loss or truncation
+    std::unordered_map<unsigned, PackedEntity> _entityById; // id -> last known entity state
+    std::unordered_map<unsigned, int> _missedById;          // id -> consecutive snapshots missed
+    std::unordered_map<unsigned, double> _lastSeenAt;       // id -> last time seen in a snapshot (seconds)
+    int _missThreshold = 3;                                 // safeguard: remove only if both miss-count and time exceed
+    double _expireSecondsEnemy = 2.0;                       // enemies expire after not seen for this time
+    double _expireSecondsDefault = 1.0;                     // players/bullets/powerups
     double _lastSend = 0.0;
     bool _serverReturnToMenu = false;
     // --- spritesheet handling ---

@@ -86,6 +86,9 @@ void Screens::leaveSession() {
     disconnectTcp();
     _connected = false;
     _entities.clear();
+    _entityById.clear();
+    _missedById.clear();
+    _lastSeenAt.clear();
     _serverReturnToMenu = false;
 }
 
@@ -135,6 +138,10 @@ void Screens::teardownNet() {
     g.io.reset();
     _spriteRowById.clear();
     _nextSpriteRow = 0;
+    _entities.clear();
+    _entityById.clear();
+    _missedById.clear();
+    _lastSeenAt.clear();
 }
 
 void Screens::sendInput(std::uint8_t bits) {
