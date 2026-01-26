@@ -42,6 +42,7 @@ void GameSession::onTcpHello(const std::string& username, const std::string& ip)
     reg_.emplace<rt::game::Size>(e, rt::game::Size{20.f, 12.f});
     reg_.emplace<rt::game::Score>(e, rt::game::Score{0});
 
+    std::lock_guard<std::mutex> lock(stateMutex_);
     playerInputBits_[e] = 0;
     playerLives_[e] = 4;
     playerScores_[e] = 0;
@@ -59,9 +60,13 @@ void GameSession::onTcpHello(const std::string& username, const std::string& ip)
 
 void GameSession::bindUdpEndpoint(const asio::ip::udp::endpoint& ep, std::uint32_t playerId) {
     auto key = makeKey(ep);
-    endpointToPlayerId_[key] = playerId;
-    keyToEndpoint_[key] = ep;
-    lastSeen_[key] = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        endpointToPlayerId_[key] = playerId;
+        keyToEndpoint_[key] = ep;
+        lastSeen_[key] = std::chrono::steady_clock::now();
+    }
+    // Broadcast outside the lock to avoid blocking I/O while holding the mutex
     broadcastRoster();
     broadcastLobbyStatus();
     std::cout << "[server] Player UDP bound: id=" << playerId << " from " << ep.address().to_string() << ":" << ep.port() << std::endl;
@@ -71,33 +76,56 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
     auto key = makeKey(from);
 
     // If endpoint not bound, check for pending player from TCP
-    if (endpointToPlayerId_.find(key) == endpointToPlayerId_.end()) {
-        auto ip = from.address().to_string();
-        auto it = pendingByIp_.find(ip);
-        if (it != pendingByIp_.end()) {
-            // bind endpoint to pending player
-            bindUdpEndpoint(from, it->second);
-            pendingByIp_.erase(it);
-        } else {
-            return;
+    bool needsBind = false;
+    std::uint32_t playerIdToBind = 0;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (endpointToPlayerId_.find(key) == endpointToPlayerId_.end()) {
+            auto ip = from.address().to_string();
+            auto it = pendingByIp_.find(ip);
+            if (it != pendingByIp_.end()) {
+                playerIdToBind = it->second;
+                pendingByIp_.erase(it);
+                needsBind = true;
+            } else {
+                return;
+            }
         }
+    }
+
+    if (needsBind) {
+        bindUdpEndpoint(from, playerIdToBind);
     }
 
     if (size < sizeof(rtype::net::Header)) return;
     const auto* header = reinterpret_cast<const rtype::net::Header*>(data);
     if (header->version != rtype::net::ProtocolVersion) return;
 
-    lastSeen_[key] = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        lastSeen_[key] = std::chrono::steady_clock::now();
+    }
+
     const char* payload = data + sizeof(rtype::net::Header);
     std::size_t payloadSize = size - sizeof(rtype::net::Header);
 
     if (header->type == rtype::net::MsgType::Input) {
         if (payloadSize >= sizeof(rtype::net::InputPacket)) {
             auto* in = reinterpret_cast<const rtype::net::InputPacket*>(payload);
-            auto it = endpointToPlayerId_.find(key);
-            if (it != endpointToPlayerId_.end()) {
-                playerInputBits_[it->second] = in->bits;
-                if (auto* pi = reg_.get<rt::game::PlayerInput>(it->second))
+            std::uint32_t playerId = 0;
+            bool found = false;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                auto it = endpointToPlayerId_.find(key);
+                if (it != endpointToPlayerId_.end()) {
+                    playerId = it->second;
+                    playerInputBits_[playerId] = in->bits;
+                    found = true;
+                }
+            }
+            // Update ECS component outside the lock
+            if (found) {
+                if (auto* pi = reg_.get<rt::game::PlayerInput>(playerId))
                     pi->bits = in->bits;
             }
         }
@@ -106,13 +134,20 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
 
     if (header->type == rtype::net::MsgType::LobbyConfig) {
         if (payloadSize >= sizeof(rtype::net::LobbyConfigPayload)) {
-            auto it = endpointToPlayerId_.find(key);
-            if (it != endpointToPlayerId_.end() && it->second == hostId_) {
-                auto* cfg = reinterpret_cast<const rtype::net::LobbyConfigPayload*>(payload);
-                lobbyBaseLives_ = std::clamp<std::uint8_t>(cfg->baseLives, 1, 6);
-                lobbyDifficulty_ = std::clamp<std::uint8_t>(cfg->difficulty, 0, 2);
-                std::cout << "[server] Host changed lobby: difficulty=" << (int)lobbyDifficulty_
-                          << " baseLives=" << (int)lobbyBaseLives_ << std::endl;
+            bool shouldBroadcast = false;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                auto it = endpointToPlayerId_.find(key);
+                if (it != endpointToPlayerId_.end() && it->second == hostId_) {
+                    auto* cfg = reinterpret_cast<const rtype::net::LobbyConfigPayload*>(payload);
+                    lobbyBaseLives_ = std::clamp<std::uint8_t>(cfg->baseLives, 1, 6);
+                    lobbyDifficulty_ = std::clamp<std::uint8_t>(cfg->difficulty, 0, 2);
+                    std::cout << "[server] Host changed lobby: difficulty=" << (int)lobbyDifficulty_
+                              << " baseLives=" << (int)lobbyBaseLives_ << std::endl;
+                    shouldBroadcast = true;
+                }
+            }
+            if (shouldBroadcast) {
                 broadcastLobbyStatus();
             }
         }
@@ -120,18 +155,34 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
     }
 
     if (header->type == rtype::net::MsgType::StartMatch) {
-        auto it = endpointToPlayerId_.find(key);
-        if (it != endpointToPlayerId_.end() && it->second == hostId_ && !gameStarted_) {
+        bool shouldStart = false;
+        std::vector<std::uint32_t> playerIds;
+        std::uint8_t baseLives = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            auto it = endpointToPlayerId_.find(key);
+            if (it != endpointToPlayerId_.end() && it->second == hostId_ && !gameStarted_) {
+                gameStarted_ = true;
+                shouldStart = true;
+                baseLives = lobbyBaseLives_;
+
+                // Collect player IDs and reset their state
+                for (auto& [pid, lives] : playerLives_) {
+                    playerIds.push_back(pid);
+                    lives = baseLives;
+                    playerScores_[pid] = 0;
+                }
+                lastTeamScore_ = 0;
+            }
+        }
+
+        if (shouldStart) {
             std::cout << "[server] Host started the match!" << std::endl;
-            gameStarted_ = true;
 
-            // Reset all players for new game
+            // Reset all players for new game (ECS operations outside the lock)
             int playerIndex = 0;
-            for (auto& [pid, lives] : playerLives_) {
-                // Reset lives to lobby setting
-                lives = lobbyBaseLives_;
-                playerScores_[pid] = 0;
-
+            for (std::uint32_t pid : playerIds) {
                 // Reset player position
                 if (auto* t = reg_.get<rt::game::Transform>(pid)) {
                     t->x = 50.f;
@@ -159,14 +210,11 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
                 playerIndex++;
             }
 
-            // Reset team score
-            lastTeamScore_ = 0;
-
             // Make sure game world is clean before starting
             cleanupGameWorld();
             lastKnownEntityIds_.clear(); // Reset entity tracking
 
-            std::cout << "[server] Game initialized for " << playerLives_.size() << " players\n";
+            std::cout << "[server] Game initialized for " << playerIds.size() << " players\n";
 
             broadcastRoster();
             broadcastLobbyStatus();
@@ -180,7 +228,17 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
             std::vector<char> scoreOut(sizeof(scoreHdr) + sizeof(scorePayload));
             std::memcpy(scoreOut.data(), &scoreHdr, sizeof(scoreHdr));
             std::memcpy(scoreOut.data() + sizeof(scoreHdr), &scorePayload, sizeof(scorePayload));
-            for (const auto& [_, ep] : keyToEndpoint_) send_(ep, scoreOut.data(), scoreOut.size());
+
+            std::vector<asio::ip::udp::endpoint> endpoints;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                for (const auto& [_, ep] : keyToEndpoint_) {
+                    endpoints.push_back(ep);
+                }
+            }
+            for (const auto& ep : endpoints) {
+                send_(ep, scoreOut.data(), scoreOut.size());
+            }
         }
         return;
     }
@@ -193,12 +251,10 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint& from, const char* d
 
 void GameSession::gameLoop() {
     using clock = std::chrono::steady_clock;
-    const double tickRate = 60.0;
+    const double tickRate = 60.0;   // Game runs at 60 Hz
     const double dt = 1.0 / tickRate;
-    const double stateInterval = 1.0 / std::max(1.0, stateHz_);
     auto next = clock::now();
     float elapsed = 0.f;
-    lastStateSend_ = clock::now();
 
     reg_.addSystem(std::make_unique<rt::game::InputSystem>());
     reg_.addSystem(std::make_unique<rt::game::ShootingSystem>());
@@ -218,19 +274,32 @@ void GameSession::gameLoop() {
     while (running_) {
         next += std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(dt));
         elapsed += static_cast<float>(dt);
+        tickCount_++;
+
+        bool isGameStarted = false;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            isGameStarted = gameStarted_;
+        }
 
         // Only run game systems if the match has started
-        if (gameStarted_) {
+        if (isGameStarted) {
             reg_.update(static_cast<float>(dt));
 
             for (auto& [e, inp] : reg_.storage<rt::game::PlayerInput>().data()) {
                 (void)inp;
                 if (auto* hf = reg_.get<rt::game::HitFlag>(e)) {
                     if (hf->value) {
-                        auto lives = playerLives_[e];
-                        if (lives > 0) {
-                            lives = static_cast<std::uint8_t>(lives - 1);
-                            playerLives_[e] = lives;
+                        std::uint8_t lives = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(stateMutex_);
+                            lives = playerLives_[e];
+                            if (lives > 0) {
+                                lives = static_cast<std::uint8_t>(lives - 1);
+                                playerLives_[e] = lives;
+                            }
+                        }
+                        if (lives > 0 || lives == 0) {
                             broadcastLivesUpdate(e, lives);
                         }
                         if (auto* t = reg_.get<rt::game::Transform>(e)) {
@@ -257,12 +326,16 @@ void GameSession::gameLoop() {
                 // Handle life pickups
                 if (auto* lp = reg_.get<rt::game::LifePickup>(e)) {
                     if (lp->pending) {
-                        auto lives = playerLives_[e];
-                        if (lives < 10) { // Cap at 10 lives
-                            lives = static_cast<std::uint8_t>(lives + 1);
-                            playerLives_[e] = lives;
-                            broadcastLivesUpdate(e, lives);
+                        std::uint8_t lives = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(stateMutex_);
+                            lives = playerLives_[e];
+                            if (lives < 10) { // Cap at 10 lives
+                                lives = static_cast<std::uint8_t>(lives + 1);
+                                playerLives_[e] = lives;
+                            }
                         }
+                        broadcastLivesUpdate(e, lives);
                         lp->pending = false; // Mark as processed
                     }
                 }
@@ -272,12 +345,26 @@ void GameSession::gameLoop() {
             for (auto& [e, inp] : reg_.storage<rt::game::PlayerInput>().data()) {
                 (void)inp;
                 if (auto* sc = reg_.get<rt::game::Score>(e)) {
+                    std::lock_guard<std::mutex> lock(stateMutex_);
                     playerScores_[e] = sc->value;
                     teamScore += sc->value;
                 }
             }
-            if (teamScore != lastTeamScore_) {
-                lastTeamScore_ = teamScore;
+
+            bool shouldBroadcastScore = false;
+            std::vector<asio::ip::udp::endpoint> endpoints;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                if (teamScore != lastTeamScore_) {
+                    lastTeamScore_ = teamScore;
+                    shouldBroadcastScore = true;
+                    for (const auto& [_, ep] : keyToEndpoint_) {
+                        endpoints.push_back(ep);
+                    }
+                }
+            }
+
+            if (shouldBroadcastScore) {
                 rtype::net::Header hdr{};
                 hdr.version = rtype::net::ProtocolVersion;
                 hdr.type = rtype::net::MsgType::ScoreUpdate;
@@ -286,19 +373,26 @@ void GameSession::gameLoop() {
                 std::vector<char> out(sizeof(hdr) + sizeof(p));
                 std::memcpy(out.data(), &hdr, sizeof(hdr));
                 std::memcpy(out.data() + sizeof(hdr), &p, sizeof(p));
-                for (const auto& [_, ep] : keyToEndpoint_) send_(ep, out.data(), out.size());
+                for (const auto& ep : endpoints) {
+                    send_(ep, out.data(), out.size());
+                }
             }
         }
 
         checkTimeouts();
 
-        auto now = clock::now();
-        if (std::chrono::duration<double>(now - lastStateSend_).count() >= stateInterval) {
+        // Broadcast state at regular tick intervals (every N ticks) to ensure
+        // state snapshots are always aligned with completed game tick boundaries.
+        // This eliminates desync between game logic and network updates.
+        if (tickCount_ % kBroadcastEveryNTicks == 0) {
             // Detect destroyed entities by comparing before/after entity sets
             std::unordered_set<std::uint32_t> currentEntityIds;
             std::unordered_set<std::uint32_t> playerIds;
-            for (const auto& [_, pid] : endpointToPlayerId_) {
-                playerIds.insert(pid);
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                for (const auto& [_, pid] : endpointToPlayerId_) {
+                    playerIds.insert(pid);
+                }
             }
             for (auto& [e, nt] : reg_.storage<rt::game::NetType>().data()) {
                 currentEntityIds.insert(e);
@@ -311,7 +405,6 @@ void GameSession::gameLoop() {
             }
             lastKnownEntityIds_ = currentEntityIds;
             broadcastState();
-            lastStateSend_ = now;
         }
 
         std::this_thread::sleep_until(next);
@@ -323,30 +416,66 @@ void GameSession::checkTimeouts() {
     const auto now = steady_clock::now();
     const auto timeout = seconds(10);
     std::vector<std::string> toRemove;
-    for (auto& [key, last] : lastSeen_) {
-        if (now - last > timeout)
-            toRemove.push_back(key);
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (auto& [key, last] : lastSeen_) {
+            if (now - last > timeout)
+                toRemove.push_back(key);
+        }
     }
     for (auto& key : toRemove)
         removeClient(key);
 }
 
 void GameSession::removeClient(const std::string& key) {
-    auto it = endpointToPlayerId_.find(key);
-    if (it == endpointToPlayerId_.end()) return;
-    auto id = it->second;
+    std::uint32_t id = 0;
+    bool wasHost = false;
+    std::vector<asio::ip::udp::endpoint> endpoints;
+    bool shouldStopGame = false;
+    bool allPlayersLeft = false;
 
-    bool wasHost = (id == hostId_);
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        auto it = endpointToPlayerId_.find(key);
+        if (it == endpointToPlayerId_.end()) return;
+        id = it->second;
 
-    endpointToPlayerId_.erase(it);
-    keyToEndpoint_.erase(key);
-    lastSeen_.erase(key);
-    playerInputBits_.erase(id);
-    playerLives_.erase(id);
-    playerScores_.erase(id);
-    playerNames_.erase(id);
+        wasHost = (id == hostId_);
+
+        endpointToPlayerId_.erase(it);
+        keyToEndpoint_.erase(key);
+        lastSeen_.erase(key);
+        playerInputBits_.erase(id);
+        playerLives_.erase(id);
+        playerScores_.erase(id);
+        playerNames_.erase(id);
+
+        // Collect endpoints for broadcasting
+        for (auto& [_, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
+
+        // Reassign host if needed
+        if (wasHost && !endpointToPlayerId_.empty()) {
+            hostId_ = endpointToPlayerId_.begin()->second;
+            std::cout << "[server] New host assigned: id=" << hostId_ << std::endl;
+        } else if (endpointToPlayerId_.empty()) {
+            hostId_ = 0;
+            gameStarted_ = false;
+            allPlayersLeft = true;
+        }
+
+        // Check if we should stop the game
+        if (endpointToPlayerId_.size() > 0 && endpointToPlayerId_.size() < 2 && gameStarted_) {
+            shouldStopGame = true;
+            gameStarted_ = false;
+        }
+    }
+
+    // Destroy entity outside the lock
     try { reg_.destroy(id); } catch (...) {}
 
+    // Send despawn message
     rtype::net::Header hdr{};
     hdr.size = sizeof(std::uint32_t);
     hdr.type = rtype::net::MsgType::Despawn;
@@ -354,18 +483,13 @@ void GameSession::removeClient(const std::string& key) {
     std::vector<char> out(sizeof(hdr) + sizeof(std::uint32_t));
     std::memcpy(out.data(), &hdr, sizeof(hdr));
     std::memcpy(out.data() + sizeof(hdr), &id, sizeof(id));
-    for (auto& [_, ep] : keyToEndpoint_)
+    for (auto& ep : endpoints) {
         send_(ep, out.data(), out.size());
+    }
 
     std::cout << "[server] Removed disconnected client: " << key << " (id=" << id << ")\n";
 
-    // Reassign host if needed
-    if (wasHost && !endpointToPlayerId_.empty()) {
-        hostId_ = endpointToPlayerId_.begin()->second;
-        std::cout << "[server] New host assigned: id=" << hostId_ << std::endl;
-    } else if (endpointToPlayerId_.empty()) {
-        hostId_ = 0;
-        gameStarted_ = false;
+    if (allPlayersLeft) {
         cleanupGameWorld();
         std::cout << "[server] All players left. Game world cleaned up.\n";
     }
@@ -374,13 +498,12 @@ void GameSession::removeClient(const std::string& key) {
     broadcastLobbyStatus();
 
     // If game was running and not enough players remain, stop the game
-    if (endpointToPlayerId_.size() > 0 && endpointToPlayerId_.size() < 2 && gameStarted_) {
+    if (shouldStopGame) {
         std::cout << "[server] Not enough players to continue. Stopping game.\n";
         rtype::net::Header rtm{0, rtype::net::MsgType::ReturnToMenu, rtype::net::ProtocolVersion};
-        for (auto& [_, ep] : keyToEndpoint_) {
+        for (auto& ep : endpoints) {
             send_(ep, &rtm, sizeof(rtm));
         }
-        gameStarted_ = false;
         cleanupGameWorld();
         broadcastLobbyStatus();
     }
@@ -394,8 +517,17 @@ void GameSession::broadcastDespawn(std::uint32_t entityId) {
     std::vector<char> out(sizeof(hdr) + sizeof(std::uint32_t));
     std::memcpy(out.data(), &hdr, sizeof(hdr));
     std::memcpy(out.data() + sizeof(hdr), &entityId, sizeof(entityId));
-    for (const auto& [_, ep] : keyToEndpoint_)
+
+    std::vector<asio::ip::udp::endpoint> endpoints;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& [_, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
+    }
+    for (const auto& ep : endpoints) {
         send_(ep, out.data(), out.size());
+    }
 }
 
 void GameSession::broadcastState() {
@@ -440,6 +572,15 @@ void GameSession::broadcastState() {
         }
     }
 
+    // Copy endpoints under lock for broadcasting
+    std::vector<asio::ip::udp::endpoint> endpoints;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& [key, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
+    }
+
     // Split across two datagrams to avoid crowding out enemies when bullets spike.
     auto sendBatch = [&](const std::vector<rtype::net::PackedEntity>& batch) {
         rtype::net::StateHeader sh{};
@@ -451,7 +592,7 @@ void GameSession::broadcastState() {
         std::memcpy(out.data() + sizeof(hdr), &sh, sizeof(sh));
         auto* arr = reinterpret_cast<rtype::net::PackedEntity*>(out.data() + sizeof(hdr) + sizeof(sh));
         for (std::uint16_t i = 0; i < sh.count; ++i) arr[i] = batch[i];
-        for (const auto& [key, ep] : keyToEndpoint_) send_(ep, out.data(), out.size());
+        for (const auto& ep : endpoints) send_(ep, out.data(), out.size());
     };
 
     // Packet A: players + enemies (authoritative for presence)
@@ -478,23 +619,32 @@ void GameSession::broadcastState() {
 void GameSession::broadcastRoster() {
     rtype::net::RosterHeader rh{};
     std::vector<rtype::net::PlayerEntry> entries;
-    entries.reserve(endpointToPlayerId_.size());
+    std::vector<asio::ip::udp::endpoint> endpoints;
 
-    for (const auto& [key, pid] : endpointToPlayerId_) {
-        rtype::net::PlayerEntry pe{};
-        pe.id = pid;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        entries.reserve(endpointToPlayerId_.size());
 
-        auto itl = playerLives_.find(pid);
-        std::uint8_t lives = (itl != playerLives_.end()) ? itl->second : 0;
-        if (lives > 10) lives = 10;
-        pe.lives = lives;
+        for (const auto& [key, pid] : endpointToPlayerId_) {
+            rtype::net::PlayerEntry pe{};
+            pe.id = pid;
 
-        auto itn = playerNames_.find(pid);
-        std::string name = (itn != playerNames_.end()) ? itn->second : (std::string("Player") + std::to_string(pid));
-        std::memset(pe.name, 0, sizeof(pe.name));
-        std::strncpy(pe.name, name.c_str(), sizeof(pe.name) - 1);
+            auto itl = playerLives_.find(pid);
+            std::uint8_t lives = (itl != playerLives_.end()) ? itl->second : 0;
+            if (lives > 10) lives = 10;
+            pe.lives = lives;
 
-        entries.push_back(pe);
+            auto itn = playerNames_.find(pid);
+            std::string name = (itn != playerNames_.end()) ? itn->second : (std::string("Player") + std::to_string(pid));
+            std::memset(pe.name, 0, sizeof(pe.name));
+            std::strncpy(pe.name, name.c_str(), sizeof(pe.name) - 1);
+
+            entries.push_back(pe);
+        }
+
+        for (const auto& [_, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
     }
 
     rh.count = static_cast<std::uint8_t>(entries.size());
@@ -510,7 +660,7 @@ void GameSession::broadcastRoster() {
     if (!entries.empty())
         std::memcpy(out.data() + sizeof(hdr) + sizeof(rh), entries.data(), entries.size() * sizeof(rtype::net::PlayerEntry));
 
-    for (const auto& [_, ep] : keyToEndpoint_)
+    for (const auto& ep : endpoints)
         send_(ep, out.data(), out.size());
 }
 
@@ -523,7 +673,15 @@ void GameSession::broadcastLivesUpdate(std::uint32_t id, std::uint8_t lives) {
     std::vector<char> out(sizeof(hdr) + sizeof(p));
     std::memcpy(out.data(), &hdr, sizeof(hdr));
     std::memcpy(out.data() + sizeof(hdr), &p, sizeof(p));
-    for (const auto& [_, ep] : keyToEndpoint_)
+
+    std::vector<asio::ip::udp::endpoint> endpoints;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (const auto& [_, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
+    }
+    for (const auto& ep : endpoints)
         send_(ep, out.data(), out.size());
 }
 
@@ -534,17 +692,26 @@ void GameSession::broadcastLobbyStatus() {
     hdr.size = sizeof(rtype::net::LobbyStatusPayload);
 
     rtype::net::LobbyStatusPayload payload{};
-    payload.hostId = hostId_;
-    payload.baseLives = lobbyBaseLives_;
-    payload.difficulty = lobbyDifficulty_;
-    payload.started = gameStarted_ ? 1 : 0;
-    payload.reserved = 0;
+    std::vector<asio::ip::udp::endpoint> endpoints;
+
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        payload.hostId = hostId_;
+        payload.baseLives = lobbyBaseLives_;
+        payload.difficulty = lobbyDifficulty_;
+        payload.started = gameStarted_ ? 1 : 0;
+        payload.reserved = 0;
+
+        for (const auto& [_, ep] : keyToEndpoint_) {
+            endpoints.push_back(ep);
+        }
+    }
 
     std::vector<char> out(sizeof(hdr) + sizeof(payload));
     std::memcpy(out.data(), &hdr, sizeof(hdr));
     std::memcpy(out.data() + sizeof(hdr), &payload, sizeof(payload));
 
-    for (const auto& [_, ep] : keyToEndpoint_)
+    for (const auto& ep : endpoints)
         send_(ep, out.data(), out.size());
 }
 

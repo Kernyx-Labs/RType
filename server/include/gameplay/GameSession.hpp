@@ -1,6 +1,7 @@
 #pragma once
 #include <asio.hpp>
 #include <thread>
+#include <mutex>
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -56,9 +57,15 @@ private:
     std::thread gameThread_;
     bool running_ = false;
 
-    std::chrono::steady_clock::time_point lastStateSend_{};
-    double stateHz_ = 20.0;
+    // Tick-synchronized state broadcasting
+    std::uint32_t tickCount_ = 0;
+    static constexpr std::uint32_t kBroadcastEveryNTicks = 3;  // 60Hz / 3 = 20Hz state updates
 
+    // Mutex for protecting shared state accessed by both I/O and game loop threads
+    // Lock ordering: Always acquire stateMutex_ before any operations on shared state
+    mutable std::mutex stateMutex_;
+
+    // Shared state protected by stateMutex_
     std::unordered_map<std::string, std::uint32_t> endpointToPlayerId_; // key "ip:port"
     std::unordered_map<std::string, asio::ip::udp::endpoint> keyToEndpoint_;
     std::unordered_map<std::uint32_t, std::uint8_t> playerInputBits_;
@@ -67,19 +74,18 @@ private:
     std::unordered_map<std::uint32_t, std::int32_t> playerScores_;
     std::int32_t lastTeamScore_ = 0;
     std::unordered_map<std::string, std::uint32_t> pendingByIp_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastSeen_;
+    std::uint32_t hostId_ = 0;
+    bool gameStarted_ = false;
+    std::uint8_t lobbyBaseLives_ = 4;
+    std::uint8_t lobbyDifficulty_ = 1;
 
+    // ECS Registry (separate synchronization if needed)
     rt::ecs::Registry reg_;
     std::mt19937 rng_;
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastSeen_;
     std::unordered_set<std::uint32_t> lastKnownEntityIds_; // Track entities from previous tick to detect deletions
 
     rtype::server::TcpServer* tcp_ = nullptr;
-    bool gameStarted_ = false;
-
-    // Lobby state
-    std::uint32_t hostId_ = 0;
-    std::uint8_t lobbyBaseLives_ = 4;
-    std::uint8_t lobbyDifficulty_ = 1;
 };
 
 } // namespace rtype::server::gameplay
