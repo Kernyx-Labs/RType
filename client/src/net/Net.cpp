@@ -199,6 +199,19 @@ void Screens::sendStartMatch() {
   g.sock->send_to(asio::buffer(buf), g.server);
 }
 
+void Screens::sendPong() {
+  if (!g.sock)
+    return;
+  rtype::net::Header hdr{};
+  hdr.version = rtype::net::ProtocolVersion;
+  hdr.type = rtype::net::MsgType::Pong;
+  hdr.size = 0;
+  std::array<char, sizeof(rtype::net::Header)> buf{};
+  std::memcpy(buf.data(), &hdr, sizeof(hdr));
+  asio::error_code ec;
+  g.sock->send_to(asio::buffer(buf), g.server, 0, ec);
+}
+
 void Screens::pumpNetworkOnce() {
   if (!g.sock)
     return;

@@ -242,6 +242,7 @@ private:
   void sendInput(std::uint8_t bits);
   void sendLobbyConfig(std::uint8_t difficulty, std::uint8_t baseLives);
   void sendStartMatch();
+  void sendPong();
   void pumpNetworkOnce();
   // Safeguard max entities to prevent OOM
   static constexpr std::size_t kMaxEntities = 1000;

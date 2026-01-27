@@ -18,7 +18,7 @@ static std::string makeKeyLocal(const asio::ip::udp::endpoint &ep) {
 GameSession::GameSession(asio::io_context &io, SendFn sendFn,
                          TcpServer *tcpServer)
     : io_(io), send_(std::move(sendFn)), rng_(std::random_device{}()),
-      tcp_(tcpServer) {}
+      lastPingTime_(std::chrono::steady_clock::now()), tcp_(tcpServer) {}
 
 GameSession::~GameSession() { stop(); }
 
@@ -35,44 +35,46 @@ void GameSession::stop() {
 
 void GameSession::onTcpHello(const std::string &username,
                              const std::string &ip) {
-  auto e = reg_.create(); // create player
-  reg_.emplace<rt::game::Transform>(
-      e, rt::game::Transform{
-             50.f, 100.f + static_cast<float>(pendingByIp_.size()) * 40.f});
-  reg_.emplace<rt::game::Velocity>(e, rt::game::Velocity{0.f, 0.f});
-  reg_.emplace<rt::game::NetType>(
-      e, rt::game::NetType{rtype::net::EntityType::Player});
-  reg_.emplace<rt::game::IsPlayer>(e, rt::game::IsPlayer{});
-  reg_.emplace<rt::game::ColorRGBA>(e, rt::game::ColorRGBA{0x55AAFFFFu});
-  reg_.emplace<rt::game::PlayerInput>(e, rt::game::PlayerInput{0, 150.f});
-  reg_.emplace<rt::game::Shooter>(e, rt::game::Shooter{0.f, 0.15f, 320.f});
-  reg_.emplace<rt::game::ChargeGun>(e, rt::game::ChargeGun{0.f, 2.0f, false});
-  reg_.emplace<rt::game::Size>(e, rt::game::Size{20.f, 12.f});
-  reg_.emplace<rt::game::Score>(e, rt::game::Score{0});
+  reg_.withLock([&](auto &reg) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    auto e = reg.create(); // create player
+    reg.template emplace<rt::game::Transform>(
+        e, rt::game::Transform{
+               50.f, 100.f + static_cast<float>(pendingByIp_.size()) * 40.f});
+    reg.template emplace<rt::game::Velocity>(e, rt::game::Velocity{0.f, 0.f});
+    reg.template emplace<rt::game::NetType>(
+        e, rt::game::NetType{rtype::net::EntityType::Player});
+    reg.template emplace<rt::game::IsPlayer>(e, rt::game::IsPlayer{});
+    reg.template emplace<rt::game::ColorRGBA>(e,
+                                              rt::game::ColorRGBA{0x55AAFFFFu});
+    reg.template emplace<rt::game::PlayerInput>(
+        e, rt::game::PlayerInput{0, 150.f});
+    reg.template emplace<rt::game::Shooter>(
+        e, rt::game::Shooter{0.f, 0.15f, 320.f});
+    reg.template emplace<rt::game::ChargeGun>(
+        e, rt::game::ChargeGun{0.f, 2.0f, false});
+    reg.template emplace<rt::game::Size>(e, rt::game::Size{20.f, 12.f});
+    reg.template emplace<rt::game::Score>(e, rt::game::Score{0});
 
-  std::lock_guard<std::mutex> lock(stateMutex_);
-  reg_.emplace<rt::game::Name>(
-      e, rt::game::Name{username.empty()
-                            ? (std::string("Player") + std::to_string(e))
-                            : username});
-  reg_.emplace<rt::game::Lives>(e, rt::game::Lives{4});
+    reg.template emplace<rt::game::Name>(
+        e, rt::game::Name{username.empty()
+                              ? (std::string("Player") + std::to_string(e))
+                              : username});
+    reg.template emplace<rt::game::Lives>(e, rt::game::Lives{4});
 
-  if (auto *n = reg_.get<rt::game::Name>(e)) {
-    // playerNames_[e] was used here, now using component
-  }
+    // If no host yet, assign this player as host
+    if (hostId_ == 0) {
+      hostId_ = e;
+      std::string name = "Player";
+      if (auto *n = reg.template get<rt::game::Name>(e))
+        name = n->value;
+      std::cout << "[server] First player assigned as host: id=" << e
+                << " name='" << name << "'\n";
+    }
 
-  // If no host yet, assign this player as host
-  if (hostId_ == 0) {
-    hostId_ = e;
-    std::string name = "Player";
-    if (auto *n = reg_.get<rt::game::Name>(e))
-      name = n->value;
-    std::cout << "[server] First player assigned as host: id=" << e << " name='"
-              << name << "'\n";
-  }
-
-  // store until UDP endpoint binds
-  pendingByIp_[ip] = e;
+    // store until UDP endpoint binds
+    pendingByIp_[ip] = e;
+  });
 }
 
 void GameSession::bindUdpEndpoint(const asio::ip::udp::endpoint &ep,
@@ -144,16 +146,12 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint &from,
           found = true;
         }
       }
-      // Update ECS component outside the lock
       if (found) {
-        if (auto *pi = reg_.get<rt::game::PlayerInput>(playerId)) {
-          pi->bits = in->bits;
-        }
-      }
-      // Update ECS component outside the lock
-      if (found) {
-        if (auto *pi = reg_.get<rt::game::PlayerInput>(playerId))
-          pi->bits = in->bits;
+        reg_.withLock([&](auto &reg) {
+          if (auto *pi = reg.template get<rt::game::PlayerInput>(playerId)) {
+            pi->bits = in->bits;
+          }
+        });
       }
     }
     return;
@@ -197,14 +195,9 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint &from,
         shouldStart = true;
         baseLives = lobbyBaseLives_;
 
-        // Collect player IDs and reset their state
-        // iteration over players:
-        for (auto &[pid, l] : reg_.storage<rt::game::Lives>().data()) {
+        // Collect player IDs from map directly (safe under stateMutex_)
+        for (const auto &[_, pid] : endpointToPlayerId_) {
           playerIds.push_back(pid);
-          l.value = baseLives;
-        }
-        for (auto &[pid, s] : reg_.storage<rt::game::Score>().data()) {
-          s.value = 0;
         }
         lastTeamScore_ = 0;
       }
@@ -213,39 +206,42 @@ void GameSession::onUdpPacket(const asio::ip::udp::endpoint &from,
     if (shouldStart) {
       std::cout << "[server] Host started the match!" << std::endl;
 
-      // Reset all players for new game (ECS operations outside the lock)
-      int playerIndex = 0;
-      for (std::uint32_t pid : playerIds) {
-        // Reset player position
-        if (auto *t = reg_.get<rt::game::Transform>(pid)) {
-          t->x = 50.f;
-          t->y = 100.f + static_cast<float>(playerIndex) * 40.f;
+      reg_.withLock([&](auto &reg) {
+        // Reset Lives and Score
+        for (auto &[pid, l] : reg.template storage<rt::game::Lives>().data()) {
+          l.value = baseLives;
+        }
+        for (auto &[pid, s] : reg.template storage<rt::game::Score>().data()) {
+          s.value = 0;
         }
 
-        // Reset velocity
-        if (auto *v = reg_.get<rt::game::Velocity>(pid)) {
-          v->vx = 0.f;
-          v->vy = 0.f;
+        // Reset all players for new game
+        int playerIndex = 0;
+        std::sort(playerIds.begin(), playerIds.end());
+        for (std::uint32_t pid : playerIds) {
+          if (auto *t = reg.template get<rt::game::Transform>(pid)) {
+            t->x = 50.f;
+            t->y = 100.f + static_cast<float>(playerIndex) * 40.f;
+          }
+          if (auto *v = reg.template get<rt::game::Velocity>(pid)) {
+            v->vx = 0.f;
+            v->vy = 0.f;
+          }
+          if (auto *sc = reg.template get<rt::game::Score>(pid)) {
+            sc->value = 0;
+          }
+          if (auto *inv = reg.template get<rt::game::Invincible>(pid)) {
+            inv->timeLeft = 1.0f;
+          } else {
+            reg.template emplace<rt::game::Invincible>(
+                pid, rt::game::Invincible{1.0f});
+          }
+          playerIndex++;
         }
 
-        // Reset score component
-        if (auto *sc = reg_.get<rt::game::Score>(pid)) {
-          sc->value = 0;
-        }
-
-        // Brief spawn invincibility at start
-        if (auto *inv = reg_.get<rt::game::Invincible>(pid)) {
-          inv->timeLeft = 1.0f;
-        } else {
-          reg_.emplace<rt::game::Invincible>(pid, rt::game::Invincible{1.0f});
-        }
-
-        playerIndex++;
-      }
-
-      // Make sure game world is clean before starting
-      cleanupGameWorld();
-      lastKnownEntityIds_.clear(); // Reset entity tracking
+        cleanupGameWorld(reg);
+        lastKnownEntityIds_.clear();
+      });
 
       std::cout << "[server] Game initialized for " << playerIds.size()
                 << " players\n";
@@ -291,29 +287,54 @@ void GameSession::gameLoop() {
   auto next = clock::now();
   float elapsed = 0.f;
 
-  reg_.addSystem(std::make_unique<rt::game::InputSystem>());
-  reg_.addSystem(std::make_unique<rt::game::ShootingSystem>());
-  reg_.addSystem(std::make_unique<rt::game::ChargeShootingSystem>());
-  reg_.addSystem(std::make_unique<rt::game::FormationSystem>(&elapsed));
-  reg_.addSystem(std::make_unique<rt::game::MovementSystem>());
-  reg_.addSystem(std::make_unique<rt::game::EnemyShootingSystem>(rng_));
-  reg_.addSystem(std::make_unique<rt::game::DespawnOffscreenSystem>(-50.f));
-  reg_.addSystem(std::make_unique<rt::game::DespawnOutOfBoundsSystem>(
-      -50.f, 1000.f, -50.f, 600.f));
-  reg_.addSystem(std::make_unique<rt::game::CollisionSystem>());
-  reg_.addSystem(std::make_unique<rt::game::InvincibilitySystem>());
-  reg_.addSystem(
-      std::make_unique<rt::game::PowerupSpawnSystem>(rng_, &lastTeamScore_));
-  reg_.addSystem(std::make_unique<rt::game::PowerupCollisionSystem>());
-  reg_.addSystem(std::make_unique<rt::game::InfiniteFireSystem>());
-  reg_.addSystem(
-      std::make_unique<rt::game::FormationSpawnSystem>(rng_, &elapsed));
+  reg_.withLock([&](auto &reg) {
+    reg.template addSystem(std::make_unique<rt::game::InputSystem>());
+    reg.template addSystem(std::make_unique<rt::game::ShootingSystem>());
+    reg.template addSystem(std::make_unique<rt::game::ChargeShootingSystem>());
+    reg.template addSystem(
+        std::make_unique<rt::game::FormationSystem>(&elapsed));
+    reg.template addSystem(std::make_unique<rt::game::MovementSystem>());
+    reg.template addSystem(
+        std::make_unique<rt::game::EnemyShootingSystem>(rng_));
+    reg.template addSystem(
+        std::make_unique<rt::game::DespawnOffscreenSystem>(-50.f));
+    reg.template addSystem(std::make_unique<rt::game::DespawnOutOfBoundsSystem>(
+        -50.f, 1000.f, -50.f, 600.f));
+    reg.template addSystem(std::make_unique<rt::game::CollisionSystem>());
+    reg.template addSystem(std::make_unique<rt::game::InvincibilitySystem>());
+    reg.template addSystem(
+        std::make_unique<rt::game::PowerupSpawnSystem>(rng_, &lastTeamScore_));
+    reg.template addSystem(
+        std::make_unique<rt::game::PowerupCollisionSystem>());
+    reg.template addSystem(std::make_unique<rt::game::InfiniteFireSystem>());
+    reg.template addSystem(
+        std::make_unique<rt::game::FormationSpawnSystem>(rng_, &elapsed));
+  });
 
   while (running_) {
     next += std::chrono::duration_cast<clock::duration>(
         std::chrono::duration<double>(dt));
     elapsed += static_cast<float>(dt);
     tickCount_++;
+
+    // Ping mechanism (every 1 second)
+    auto now = clock::now();
+    if (now - lastPingTime_ >= std::chrono::seconds(1)) {
+      lastPingTime_ = now;
+      rtype::net::Header ph{};
+      ph.version = rtype::net::ProtocolVersion;
+      ph.type = rtype::net::MsgType::Ping;
+      ph.size = 0;
+
+      std::vector<asio::ip::udp::endpoint> eps;
+      {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (auto &[_, ep] : keyToEndpoint_)
+          eps.push_back(ep);
+      }
+      for (auto &ep : eps)
+        send_(ep, &ph, sizeof(ph));
+    }
 
     bool isGameStarted = false;
     {
@@ -323,102 +344,107 @@ void GameSession::gameLoop() {
 
     // Only run game systems if the match has started
     if (isGameStarted) {
-      reg_.update(static_cast<float>(dt));
+      reg_.withLock([&](auto &reg) {
+        reg.update(static_cast<float>(dt));
 
-      for (auto &[e, inp] : reg_.storage<rt::game::PlayerInput>().data()) {
-        (void)inp;
-        if (auto *hf = reg_.get<rt::game::HitFlag>(e)) {
-          if (hf->value) {
-            std::uint8_t lives = 0;
-            if (auto *l = reg_.get<rt::game::Lives>(e)) {
-              if (l->value > 0) {
-                l->value--;
+        for (auto &[e, inp] :
+             reg.template storage<rt::game::PlayerInput>().data()) {
+          (void)inp;
+          if (auto *hf = reg.template get<rt::game::HitFlag>(e)) {
+            if (hf->value) {
+              std::uint8_t lives = 0;
+              if (auto *l = reg.template get<rt::game::Lives>(e)) {
+                if (l->value > 0) {
+                  l->value--;
+                  lives = l->value;
+                }
+              }
+              if (lives > 0 || lives == 0) { // Keep logic
+                broadcastLivesUpdate(e, lives);
+              }
+              if (auto *t = reg.template get<rt::game::Transform>(e)) {
+                constexpr float kStartX = 50.f;
+                constexpr float kWorldH = 600.f;
+                constexpr float kTopMargin = 56.f;
+                constexpr float kBottomMargin = 10.f;
+                float y = t->y;
+                float maxY = kWorldH - kBottomMargin - 12.f;
+                if (y < kTopMargin)
+                  y = kTopMargin;
+                if (y > maxY)
+                  y = maxY;
+                t->x = kStartX;
+                t->y = y;
+              }
+              if (auto *v = reg.template get<rt::game::Velocity>(e)) {
+                v->vx = 0.f;
+                v->vy = 0.f;
+              }
+              if (auto *inv = reg.template get<rt::game::Invincible>(e)) {
+                inv->timeLeft = std::max(inv->timeLeft, 1.0f);
+              } else {
+                reg.template emplace<rt::game::Invincible>(
+                    e, rt::game::Invincible{1.0f});
+              }
+              hf->value = false;
+            } // This closes 'if (hf->value)'
+          }
+
+          // Handle life pickups
+          if (auto *lp = reg.template get<rt::game::LifePickup>(e)) {
+            if (lp->pending) {
+              std::uint8_t lives = 0;
+              if (auto *l = reg.template get<rt::game::Lives>(e)) {
                 lives = l->value;
+                if (lives < 10) {
+                  lives++;
+                  l->value = lives;
+                }
               }
-            }
-            if (lives > 0 || lives == 0) { // Keep logic
               broadcastLivesUpdate(e, lives);
+              lp->pending = false; // Mark as processed
             }
-            if (auto *t = reg_.get<rt::game::Transform>(e)) {
-              constexpr float kStartX = 50.f;
-              constexpr float kWorldH = 600.f;
-              constexpr float kTopMargin = 56.f;
-              constexpr float kBottomMargin = 10.f;
-              float y = t->y;
-              float maxY = kWorldH - kBottomMargin - 12.f;
-              if (y < kTopMargin)
-                y = kTopMargin;
-              if (y > maxY)
-                y = maxY;
-              t->x = kStartX;
-              t->y = y;
-            }
-            if (auto *v = reg_.get<rt::game::Velocity>(e)) {
-              v->vx = 0.f;
-              v->vy = 0.f;
-            }
-            if (auto *inv = reg_.get<rt::game::Invincible>(e)) {
-              inv->timeLeft = std::max(inv->timeLeft, 1.0f);
-            } else {
-              reg_.emplace<rt::game::Invincible>(e, rt::game::Invincible{1.0f});
-            }
-            hf->value = false;
-          } // This closes 'if (hf->value)'
-        }
-
-        // Handle life pickups
-        if (auto *lp = reg_.get<rt::game::LifePickup>(e)) {
-          if (lp->pending) {
-            std::uint8_t lives = 0;
-            if (auto *l = reg_.get<rt::game::Lives>(e)) {
-              lives = l->value;
-              if (lives < 10) {
-                lives++;
-                l->value = lives;
-              }
-            }
-            broadcastLivesUpdate(e, lives);
-            lp->pending = false; // Mark as processed
           }
         }
-      }
 
-      std::int32_t teamScore = 0;
-      for (auto &[e, inp] : reg_.storage<rt::game::PlayerInput>().data()) {
-        (void)inp;
-        if (auto *sc = reg_.get<rt::game::Score>(e)) {
+        std::int32_t teamScore = 0;
+        for (auto &[e, inp] :
+             reg.template storage<rt::game::PlayerInput>().data()) {
+          (void)inp;
+          if (auto *sc = reg.template get<rt::game::Score>(e)) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            // playerScores_[e] = sc->value; // Removed
+            teamScore += sc->value;
+          }
+        }
+
+        bool shouldBroadcastScore = false;
+        std::vector<asio::ip::udp::endpoint> endpoints;
+        {
           std::lock_guard<std::mutex> lock(stateMutex_);
-          // playerScores_[e] = sc->value; // Removed
-          teamScore += sc->value;
-        }
-      }
-
-      bool shouldBroadcastScore = false;
-      std::vector<asio::ip::udp::endpoint> endpoints;
-      {
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        if (teamScore != lastTeamScore_) {
-          lastTeamScore_ = teamScore;
-          shouldBroadcastScore = true;
-          for (const auto &[_, ep] : keyToEndpoint_) {
-            endpoints.push_back(ep);
+          if (teamScore != lastTeamScore_) {
+            lastTeamScore_ = teamScore;
+            shouldBroadcastScore = true;
+            for (const auto &[_, ep] : keyToEndpoint_) {
+              endpoints.push_back(ep);
+            }
           }
         }
-      }
 
-      if (shouldBroadcastScore) {
-        rtype::net::Header hdr{};
-        hdr.version = rtype::net::ProtocolVersion;
-        hdr.type = rtype::net::MsgType::ScoreUpdate;
-        hdr.size = sizeof(rtype::net::ScoreUpdatePayload);
-        rtype::net::ScoreUpdatePayload p{0, teamScore};
-        std::vector<char> out(sizeof(hdr) + sizeof(p));
-        std::memcpy(out.data(), &hdr, sizeof(hdr));
-        std::memcpy(out.data() + sizeof(hdr), &p, sizeof(p));
-        for (const auto &ep : endpoints) {
-          send_(ep, out.data(), out.size());
+        if (shouldBroadcastScore) {
+          rtype::net::Header hdr{};
+          hdr.version = rtype::net::ProtocolVersion;
+          hdr.type = rtype::net::MsgType::ScoreUpdate;
+          hdr.size = sizeof(rtype::net::ScoreUpdatePayload);
+          rtype::net::ScoreUpdatePayload p{0, teamScore};
+          std::vector<char> out(sizeof(hdr) + sizeof(p));
+          std::memcpy(out.data(), &hdr, sizeof(hdr));
+          std::memcpy(out.data() + sizeof(hdr), &p, sizeof(p));
+          for (const auto &ep : endpoints) {
+            send_(ep, out.data(), out.size());
+          }
         }
-      }
+      });
     }
 
     checkTimeouts();
@@ -437,9 +463,12 @@ void GameSession::gameLoop() {
           playerIds.insert(pid);
         }
       }
-      for (auto &[e, nt] : reg_.storage<rt::game::NetType>().data()) {
-        currentEntityIds.insert(e);
-      }
+      // Access storage under lock
+      reg_.withLock([&](auto &reg) {
+        for (auto &[e, nt] : reg.template storage<rt::game::NetType>().data()) {
+          currentEntityIds.insert(e);
+        }
+      });
       // Send Despawn for entities that disappeared (excluding players)
       for (std::uint32_t id : lastKnownEntityIds_) {
         if (currentEntityIds.find(id) == currentEntityIds.end() &&
@@ -516,10 +545,12 @@ void GameSession::removeClient(const std::string &key) {
   }
 
   // Destroy entity outside the lock
-  try {
-    reg_.destroy(id);
-  } catch (...) {
-  }
+  reg_.withLock([&](auto &reg) {
+    try {
+      reg.destroy(id);
+    } catch (...) {
+    }
+  });
 
   // Send despawn message
   rtype::net::Header hdr{};
@@ -537,7 +568,7 @@ void GameSession::removeClient(const std::string &key) {
             << ")\n";
 
   if (allPlayersLeft) {
-    cleanupGameWorld();
+    reg_.withLock([&](auto &reg) { cleanupGameWorld(reg); });
     std::cout << "[server] All players left. Game world cleaned up.\n";
   }
 
@@ -552,7 +583,7 @@ void GameSession::removeClient(const std::string &key) {
     for (auto &ep : endpoints) {
       send_(ep, &rtm, sizeof(rtm));
     }
-    cleanupGameWorld();
+    reg_.withLock([&](auto &reg) { cleanupGameWorld(reg); });
     broadcastLobbyStatus();
   }
 }
@@ -603,37 +634,39 @@ void GameSession::broadcastState() {
   enemies.reserve(64);
   powerups.reserve(16);
 
-  auto &types = reg_.storage<rt::game::NetType>().data();
-  for (auto &[e, nt] : types) {
-    auto *tr = reg_.get<rt::game::Transform>(e);
-    auto *ve = reg_.get<rt::game::Velocity>(e);
-    auto *co = reg_.get<rt::game::ColorRGBA>(e);
-    if (!tr || !ve || !co)
-      continue;
-    rtype::net::PackedEntity pe{};
-    pe.id = e;
-    pe.type = nt.type;
-    pe.x = tr->x;
-    pe.y = tr->y;
-    pe.vx = ve->vx;
-    pe.vy = ve->vy;
-    pe.rgba = co->rgba;
-    switch (nt.type) {
-    case rtype::net::EntityType::Player:
-      players.push_back(pe);
-      break;
-    case rtype::net::EntityType::Bullet:
-      bullets.push_back(pe);
-      break;
-    case rtype::net::EntityType::Powerup:
-      powerups.push_back(pe);
-      break;
-    case rtype::net::EntityType::Enemy:
-    default:
-      enemies.push_back(pe);
-      break;
+  reg_.withLock([&](auto &reg) {
+    auto &types = reg.template storage<rt::game::NetType>().data();
+    for (auto &[e, nt] : types) {
+      auto *tr = reg.template get<rt::game::Transform>(e);
+      auto *ve = reg.template get<rt::game::Velocity>(e);
+      auto *co = reg.template get<rt::game::ColorRGBA>(e);
+      if (!tr || !ve || !co)
+        continue;
+      rtype::net::PackedEntity pe{};
+      pe.id = e;
+      pe.type = nt.type;
+      pe.x = tr->x;
+      pe.y = tr->y;
+      pe.vx = ve->vx;
+      pe.vy = ve->vy;
+      pe.rgba = co->rgba;
+      switch (nt.type) {
+      case rtype::net::EntityType::Player:
+        players.push_back(pe);
+        break;
+      case rtype::net::EntityType::Bullet:
+        bullets.push_back(pe);
+        break;
+      case rtype::net::EntityType::Powerup:
+        powerups.push_back(pe);
+        break;
+      case rtype::net::EntityType::Enemy:
+      default:
+        enemies.push_back(pe);
+        break;
+      }
     }
-  }
+  });
 
   // Copy endpoints under lock for broadcasting
   std::vector<asio::ip::udp::endpoint> endpoints;
@@ -700,34 +733,44 @@ void GameSession::broadcastRoster() {
   std::vector<rtype::net::PlayerEntry> entries;
   std::vector<asio::ip::udp::endpoint> endpoints;
 
+  std::vector<std::pair<std::uint32_t, std::string>> playerIdsAndNames;
+
   {
     std::lock_guard<std::mutex> lock(stateMutex_);
-    entries.reserve(endpointToPlayerId_.size());
-
     for (const auto &[key, pid] : endpointToPlayerId_) {
-      rtype::net::PlayerEntry pe{};
-      pe.id = pid;
-
-      std::uint8_t lives = 0;
-      if (auto *l = reg_.get<rt::game::Lives>(pid))
-        lives = l->value;
-      if (lives > 10)
-        lives = 10;
-      pe.lives = lives;
-
-      std::string name = "Player" + std::to_string(pid);
-      if (auto *n = reg_.get<rt::game::Name>(pid))
-        name = n->value;
-      std::memset(pe.name, 0, sizeof(pe.name));
-      std::strncpy(pe.name, name.c_str(), sizeof(pe.name) - 1);
-
-      entries.push_back(pe);
+      // We can't access registry here to get Name/Lives!
+      // So we just collect IDs.
+      playerIdsAndNames.push_back({pid, key});
     }
 
     for (const auto &[_, ep] : keyToEndpoint_) {
       endpoints.push_back(ep);
     }
   }
+
+  // Now access registry to get details
+  reg_.withLock([&](auto &reg) {
+    entries.reserve(playerIdsAndNames.size());
+    for (const auto &[pid, key] : playerIdsAndNames) {
+      rtype::net::PlayerEntry pe{};
+      pe.id = pid;
+
+      std::uint8_t lives = 0;
+      if (auto *l = reg.template get<rt::game::Lives>(pid))
+        lives = l->value;
+      if (lives > 10)
+        lives = 10;
+      pe.lives = lives;
+
+      std::string name = "Player" + std::to_string(pid);
+      if (auto *n = reg.template get<rt::game::Name>(pid))
+        name = n->value;
+      std::memset(pe.name, 0, sizeof(pe.name));
+      std::strncpy(pe.name, name.c_str(), sizeof(pe.name) - 1);
+
+      entries.push_back(pe);
+    }
+  });
 
   rh.count = static_cast<std::uint8_t>(entries.size());
 
@@ -804,20 +847,20 @@ void GameSession::maybeStartGame() {
   // message Kept for backwards compatibility but does nothing
 }
 
-void GameSession::cleanupGameWorld() {
+void GameSession::cleanupGameWorld(rt::ecs::Registry &reg) {
   // Clean up all non-player entities (enemies, bullets, powerups,
   // formations)
   std::vector<rt::ecs::Entity> toDestroy;
 
   // Find all entities that are not players
-  for (auto &[e, nt] : reg_.storage<rt::game::NetType>().data()) {
+  for (auto &[e, nt] : reg.storage<rt::game::NetType>().data()) {
     if (nt.type != rtype::net::EntityType::Player) {
       toDestroy.push_back(e);
     }
   }
 
   // Also destroy formations (they may not have NetType component)
-  for (auto &[e, f] : reg_.storage<rt::game::Formation>().data()) {
+  for (auto &[e, f] : reg.storage<rt::game::Formation>().data()) {
     (void)f;
     toDestroy.push_back(e);
   }
@@ -825,7 +868,7 @@ void GameSession::cleanupGameWorld() {
   // Destroy all collected entities
   for (auto e : toDestroy) {
     try {
-      reg_.destroy(e);
+      reg.destroy(e);
     } catch (...) {
     }
   }

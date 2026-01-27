@@ -1,5 +1,6 @@
 #pragma once
 #include "common/Protocol.hpp"
+#include "gameplay/ThreadSafeRegistry.hpp"
 #include "rt/ecs/Registry.hpp"
 #include <array>
 #include <asio.hpp>
@@ -51,7 +52,8 @@ private:
   void broadcastLivesUpdate(std::uint32_t id, std::uint8_t lives);
   void broadcastLobbyStatus();
   void maybeStartGame();
-  void cleanupGameWorld();
+
+  void cleanupGameWorld(rt::ecs::Registry &reg);
 
   static std::string makeKey(const asio::ip::udp::endpoint &ep);
 
@@ -89,11 +91,14 @@ private:
   std::uint8_t lobbyDifficulty_ = 1;
 
   // ECS Registry (separate synchronization if needed)
-  rt::ecs::Registry reg_;
+  ThreadSafeRegistry reg_;
   std::mt19937 rng_;
   std::unordered_set<std::uint32_t>
       lastKnownEntityIds_; // Track entities from previous tick to detect
                            // deletions
+
+  // Ping/Pong
+  std::chrono::steady_clock::time_point lastPingTime_;
 
   rtype::server::TcpServer *tcp_ = nullptr;
 };

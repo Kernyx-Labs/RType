@@ -424,6 +424,8 @@ void Screens::handleNetPacket(const char *data, std::size_t n) {
     _score = su->score;
   } else if (h->type == rtype::net::MsgType::ReturnToMenu) {
     _serverReturnToMenu = true;
+  } else if (h->type == rtype::net::MsgType::Ping) {
+    sendPong();
   } else {
     // ignore unknown types
   }
