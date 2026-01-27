@@ -104,8 +104,8 @@ void ChargeShootingSystem::update(rt::ecs::Registry& r, float dt) {
 void EnemyShootingSystem::update(rt::ecs::Registry& r, float dt) {
     // Build a list of players
     std::vector<rt::ecs::Entity> players;
-    for (auto& [e, nt] : r.storage<NetType>().data()) {
-        if (nt.type == rtype::net::EntityType::Player) players.push_back(e);
+    for (auto& [e, _] : r.storage<IsPlayer>().data()) {
+        players.push_back(e);
     }
     if (players.empty()) return;
 
@@ -528,8 +528,8 @@ void CollisionSystem::update(rt::ecs::Registry& r, float dt) {
             }
         } else {
             // enemy bullets hit players
-            for (auto& [e, _] : r.storage<PlayerInput>().data()) {
-                // players have PlayerInput component
+            for (auto& [e, _] : r.storage<IsPlayer>().data()) {
+                // players have IsPlayer component (and PlayerInput)
                 if (!intersects(b, e)) continue;
                 // If player is currently invincible, ignore this hit (but still destroy bullet)
                 if (auto* inv = r.get<Invincible>(e)) {
@@ -554,7 +554,7 @@ void CollisionSystem::update(rt::ecs::Registry& r, float dt) {
     }
 
     // Player-Enemy direct collision
-    for (auto& [player, _] : r.storage<PlayerInput>().data()) {
+    for (auto& [player, _] : r.storage<IsPlayer>().data()) {
         // Skip if player is invincible
         if (auto* inv = r.get<Invincible>(player)) {
             if (inv->timeLeft > 0.f) continue;

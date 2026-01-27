@@ -20,6 +20,7 @@ struct Size { float w = 0.f; float h = 0.f; };
 struct PlayerInput { std::uint8_t bits = 0; float speed = 150.f; };
 
 // Tags and gameplay data used by server
+struct IsPlayer {};
 struct EnemyTag {};
 
 struct BossTag {

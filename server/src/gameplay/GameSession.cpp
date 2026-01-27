@@ -35,6 +35,7 @@ void GameSession::onTcpHello(const std::string& username, const std::string& ip)
     reg_.emplace<rt::game::Transform>(e, rt::game::Transform{50.f, 100.f + static_cast<float>(pendingByIp_.size()) * 40.f});
     reg_.emplace<rt::game::Velocity>(e, rt::game::Velocity{0.f, 0.f});
     reg_.emplace<rt::game::NetType>(e, rt::game::NetType{rtype::net::EntityType::Player});
+    reg_.emplace<rt::game::IsPlayer>(e, rt::game::IsPlayer{});
     reg_.emplace<rt::game::ColorRGBA>(e, rt::game::ColorRGBA{0x55AAFFFFu});
     reg_.emplace<rt::game::PlayerInput>(e, rt::game::PlayerInput{0, 150.f});
     reg_.emplace<rt::game::Shooter>(e, rt::game::Shooter{0.f, 0.15f, 320.f});
