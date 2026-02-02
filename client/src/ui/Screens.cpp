@@ -387,6 +387,7 @@ void Screens::handleNetPacket(const char *data, std::size_t n) {
       std::string name(pe->name,
                        pe->name + strnlen(pe->name, sizeof(pe->name)));
       int lives = std::clamp<int>(pe->lives, 0, 10);
+      _spriteRowById[pe->id] = pe->shipId;
       if (name == unameTrunc) {
         _playerLives = lives;
         _selfId = pe->id;
@@ -763,17 +764,23 @@ void Screens::drawGameplay(ScreenState &screen) {
       if (e.x + shipW > w)
         e.x = (float)(w - shipW);
       // Get or assign a fixed row for this player id
-      int rowIndex;
+      int rowIndex = 0;
       auto it = _spriteRowById.find(e.id);
-      if (it == _spriteRowById.end()) {
-        rowIndex = _nextSpriteRow % _sheetRows;
-        _spriteRowById[e.id] = rowIndex;
-        _nextSpriteRow++;
-      } else {
+      if (it != _spriteRowById.end()) {
         rowIndex = it->second;
       }
       if (_sheetLoaded && _frameW > 0 && _frameH > 0) {
-        int colIndex = 2;
+        // Calculate tilt column based on logic:
+        // Left (0) = Descending (vy > 0), Right (4) = Ascending (vy < 0)
+        int colIndex = 2; // Default straight
+        if (e.vy < -50.f)
+          colIndex = 4; // Max Up
+        else if (e.vy < -10.f)
+          colIndex = 3; // Mid Up
+        else if (e.vy > 50.f)
+          colIndex = 0; // Max Down
+        else if (e.vy > 10.f)
+          colIndex = 1; // Mid Down
         const float playerScale = 1.18f;
         float drawW = _frameW * playerScale;
         float drawH = _frameH * playerScale;
@@ -794,8 +801,9 @@ void Screens::drawGameplay(ScreenState &screen) {
         Vector2 origin{0.0f, 0.0f};
         DrawTexturePro(_sheet, src, dst, origin, 0.0f, WHITE);
       } else {
-        // No fallback debug rectangle: keep player invisible if sprite isn't
-        // available
+        // Fallback debug rectangle
+        Rectangle dst{e.x, e.y, 20.0f, 12.0f};
+        DrawRectangleRec(dst, RED);
       }
     } else if (e.type == 2) { // Enemy
       if (_enemyLoaded && _enemyFrameW > 0 && _enemyFrameH > 0) {

@@ -36,6 +36,32 @@ void GameSession::stop() {
 void GameSession::onTcpHello(const std::string &username,
                              const std::string &ip) {
   reg_.withLock([&](auto &reg) {
+    // Cap strictly at 5 players
+    std::size_t count = 0;
+    for (auto &[pid, ip] : reg.template storage<rt::game::IsPlayer>().data()) {
+      count++;
+    }
+    if (count >= 5) {
+      std::cout << "[server] Connection rejected: Server full (5/5 players)\n";
+      return;
+    }
+
+    // Reuse ship IDs: find first unused 0..4
+    std::vector<bool> usedShips(5, false);
+    for (auto &[pid, st] : reg.template storage<rt::game::ShipType>().data()) {
+      if (st.value < 5)
+        usedShips[st.value] = true;
+    }
+    int assignedShip = -1;
+    for (int i = 0; i < 5; ++i) {
+      if (!usedShips[i]) {
+        assignedShip = i;
+        break;
+      }
+    }
+    if (assignedShip == -1)
+      assignedShip = 4; // Should not happen given count check
+
     std::lock_guard<std::mutex> lock(stateMutex_);
     auto e = reg.create(); // create player
     reg.template emplace<rt::game::Transform>(
@@ -45,6 +71,8 @@ void GameSession::onTcpHello(const std::string &username,
     reg.template emplace<rt::game::NetType>(
         e, rt::game::NetType{rtype::net::EntityType::Player});
     reg.template emplace<rt::game::IsPlayer>(e, rt::game::IsPlayer{});
+    reg.template emplace<rt::game::ShipType>(
+        e, rt::game::ShipType{(std::uint8_t)assignedShip});
     reg.template emplace<rt::game::ColorRGBA>(e,
                                               rt::game::ColorRGBA{0x55AAFFFFu});
     reg.template emplace<rt::game::PlayerInput>(
@@ -767,6 +795,11 @@ void GameSession::broadcastRoster() {
         name = n->value;
       std::memset(pe.name, 0, sizeof(pe.name));
       std::strncpy(pe.name, name.c_str(), sizeof(pe.name) - 1);
+
+      std::uint8_t shipId = 0;
+      if (auto *s = reg.template get<rt::game::ShipType>(pid))
+        shipId = s->value;
+      pe.shipId = shipId;
 
       entries.push_back(pe);
     }
