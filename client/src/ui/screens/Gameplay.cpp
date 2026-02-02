@@ -185,7 +185,7 @@ void Screens::drawGameplay(ScreenState &screen) {
         else if (e.vy > 10.f)
           colIndex = 1; // Mid Down
 
-        const float playerScale = 1.18f;
+        const float playerScale = 1.8f;
         float drawW = _frameW * playerScale;
         float drawH = _frameH * playerScale;
         const float xOffset = -6.0f;
