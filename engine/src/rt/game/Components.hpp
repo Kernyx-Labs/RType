@@ -38,6 +38,9 @@ struct PlayerInput {
 
 // Tags and gameplay data used by server
 struct IsPlayer {};
+struct ShipType {
+  std::uint8_t value = 0;
+};
 struct EnemyTag {};
 
 struct BossTag {

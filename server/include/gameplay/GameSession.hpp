@@ -89,6 +89,7 @@ private:
   bool gameStarted_ = false;
   std::uint8_t lobbyBaseLives_ = 4;
   std::uint8_t lobbyDifficulty_ = 1;
+  std::uint8_t nextShipId_ = 0; // 0..4 repeating
 
   // ECS Registry (separate synchronization if needed)
   ThreadSafeRegistry reg_;

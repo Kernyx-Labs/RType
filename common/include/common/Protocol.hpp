@@ -91,6 +91,7 @@ struct RosterHeader {
 struct PlayerEntry {
     std::uint32_t id;     // server-side entity/player id
     std::uint8_t lives;   // remaining lives
+    std::uint8_t shipId;  // 0..4, determines sprite row
     char name[16];        // zero-padded/truncated username (max 15 chars + NUL)
 };
 #pragma pack(pop)
