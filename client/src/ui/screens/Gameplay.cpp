@@ -176,7 +176,20 @@ void Screens::drawGameplay(ScreenState &screen) {
       // it based on recent damage (temporary solution)
     } else if (e.type == 2) {
       // Enemy
-      DrawRectangle((int)e.x, (int)e.y, 24, 16, (Color){220, 80, 80, 255});
+      if (_enemyLoaded && _enemyFrameW > 0 && _enemyFrameH > 0) {
+        int colIndex = 3;
+        int rowIndex = 0;
+        float scale = 1.0f; // Adjust if needed
+        float drawW = _enemyFrameW * scale;
+        float drawH = _enemyFrameH * scale;
+        Rectangle src{_enemyFrameW * colIndex, _enemyFrameH * rowIndex,
+                      _enemyFrameW, _enemyFrameH};
+        Rectangle dst{e.x, e.y, drawW, drawH};
+        Vector2 origin{0.0f, 0.0f};
+        DrawTexturePro(_enemySheet, src, dst, origin, 0.0f, WHITE);
+      } else {
+        DrawRectangle((int)e.x, (int)e.y, 24, 16, (Color){220, 80, 80, 255});
+      }
     } else if (e.type == 3) {
       // Bullet
       DrawRectangle((int)e.x, (int)e.y, 6, 3, (Color){240, 220, 80, 255});
