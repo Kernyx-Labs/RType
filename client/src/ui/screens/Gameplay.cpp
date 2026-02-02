@@ -105,38 +105,6 @@ void Screens::drawGameplay(ScreenState &screen) {
     _lastSend = now;
   }
 
-  // --- Bottom HUD: Lives (left) + Overheat bar (center) ---
-  int bottomY = h - bottomBarH;
-  DrawRectangle(0, bottomY, w, bottomBarH, (Color){0, 0, 0, 140});
-  // Make HP squares smaller so they don't collide with the charge bar
-  int sqSize = std::max(6, (int)((bottomBarH - 2 * margin) * 0.6f));
-  int gap = std::max(6, sqSize / 3);
-  int livesToDraw = std::min(10, std::max(0, _playerLives));
-  int startX = margin;
-  for (int i = 0; i < 10; ++i) {
-    Color c = (i < livesToDraw) ? (Color){100, 220, 120, 255}
-                                : (Color){80, 80, 80, 180};
-    DrawRectangle(startX + i * (sqSize + gap), bottomY + margin, sqSize, sqSize,
-                  c);
-  }
-  // Overheat bar centered
-  int barW = (int)(w * 0.35f);
-  int barX = (w - barW) / 2;
-  int barY = bottomY + margin;
-  int barH = sqSize;
-  DrawRectangle(barX, barY, barW, barH, (Color){60, 60, 60, 180});
-  int fillW = (int)(barW * _spHeat);
-  Color fillC =
-      _spHeat > 0.2f ? (Color){220, 90, 90, 220} : (Color){220, 40, 40, 240};
-  DrawRectangle(barX, barY, fillW, barH, fillC);
-  DrawRectangleLines(barX, barY, barW, barH, (Color){220, 220, 220, 200});
-
-  // --- Team score (top-left) ---
-  int hudFontScore = hudFont;
-  int scoreMargin = margin;
-  std::string scoreText = std::string("Score: ") + std::to_string(_score);
-  DrawText(scoreText.c_str(), scoreMargin, scoreMargin, hudFontScore, RAYWHITE);
-
   // --- World rendering (rectangles like singleplayer) ---
   if (_entities.empty()) {
     titleCentered("Connecting to game...", (int)(GetScreenHeight() * 0.5f), 24,
@@ -231,6 +199,38 @@ void Screens::drawGameplay(ScreenState &screen) {
       DrawCircleLines(cx, cy, radius, line);
     }
   }
+
+  // --- Bottom HUD: Lives (left) + Overheat bar (center) ---
+  int bottomY = h - bottomBarH;
+  DrawRectangle(0, bottomY, w, bottomBarH, (Color){0, 0, 0, 140});
+  // Make HP squares smaller so they don't collide with the charge bar
+  int sqSize = std::max(6, (int)((bottomBarH - 2 * margin) * 0.6f));
+  int gap = std::max(6, sqSize / 3);
+  int livesToDraw = std::min(10, std::max(0, _playerLives));
+  int startX = margin;
+  for (int i = 0; i < 10; ++i) {
+    Color c = (i < livesToDraw) ? (Color){100, 220, 120, 255}
+                                : (Color){80, 80, 80, 180};
+    DrawRectangle(startX + i * (sqSize + gap), bottomY + margin, sqSize, sqSize,
+                  c);
+  }
+  // Overheat bar centered
+  int barW = (int)(w * 0.35f);
+  int barX = (w - barW) / 2;
+  int barY = bottomY + margin;
+  int barH = sqSize;
+  DrawRectangle(barX, barY, barW, barH, (Color){60, 60, 60, 180});
+  int fillW = (int)(barW * _spHeat);
+  Color fillC =
+      _spHeat > 0.2f ? (Color){220, 90, 90, 220} : (Color){220, 40, 40, 240};
+  DrawRectangle(barX, barY, fillW, barH, fillC);
+  DrawRectangleLines(barX, barY, barW, barH, (Color){220, 220, 220, 200});
+
+  // --- Team score (top-left) ---
+  int hudFontScore = hudFont;
+  int scoreMargin = margin;
+  std::string scoreText = std::string("Score: ") + std::to_string(_score);
+  DrawText(scoreText.c_str(), scoreMargin, scoreMargin, hudFontScore, RAYWHITE);
 
   // If everyone is dead, go to dedicated Game Over screen
   bool everyoneDead = (_playerLives <= 0);
