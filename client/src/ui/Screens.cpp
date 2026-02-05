@@ -1,5 +1,7 @@
 #include "../../include/client/ui/Screens.hpp"
-#include "../../include/client/ui/Widgets.hpp"
+#include "../../include/client/ui/widgets/Button.hpp"
+#include "../../include/client/ui/widgets/InputBox.hpp"
+#include "../../include/client/ui/widgets/Title.hpp"
 #include "common/Protocol.hpp"
 #include <algorithm>
 #include <asio.hpp>
@@ -119,6 +121,7 @@ Screens::~Screens() {
       UnloadTexture(_enemySheet);
       _enemyLoaded = false;
     }
+    unloadSoundEffects();
   }
 }
 
@@ -130,6 +133,44 @@ void Screens::unloadGraphics() {
   if (_enemyLoaded) {
     UnloadTexture(_enemySheet);
     _enemyLoaded = false;
+  }
+  unloadSoundEffects();
+}
+
+void Screens::loadSoundEffects() {
+  if (_shootSoundLoaded) return;
+
+  // Try to find the shooting sound effect
+  std::vector<std::string> candidates;
+  candidates.emplace_back("sound/Blaster-Shot.mp3");
+  candidates.emplace_back("client/sound/Blaster-Shot.mp3");
+  candidates.emplace_back("../client/sound/Blaster-Shot.mp3");
+  candidates.emplace_back("../../client/sound/Blaster-Shot.mp3");
+
+  for (const auto& path : candidates) {
+    if (FileExists(path.c_str())) {
+      _shootSound = LoadSound(path.c_str());
+      if (_shootSound.frameCount > 0) {
+        _shootSoundLoaded = true;
+        SetSoundVolume(_shootSound, 0.4f); // 40% volume
+        logMessage("Shoot sound effect loaded from: " + path);
+        return;
+      }
+    }
+  }
+  logMessage("Warning: Shoot sound effect not found", "WARN");
+}
+
+void Screens::unloadSoundEffects() {
+  if (_shootSoundLoaded) {
+    UnloadSound(_shootSound);
+    _shootSoundLoaded = false;
+  }
+}
+
+void Screens::playShootSound() {
+  if (_shootSoundLoaded) {
+    PlaySound(_shootSound);
   }
 }
 
@@ -442,7 +483,8 @@ void Screens::drawWaiting(ScreenState &screen) {
 
   // Process inbound network data
   pumpNetworkOnce();
-  pumpTcpOnce(); // NEW: process TCP StartGame signal
+  // TODO: Implement TCP StartGame signal processing
+  // pumpTcpOnce(); // NEW: process TCP StartGame signal
 
   if (_serverReturnToMenu) {
     leaveSession();
@@ -484,10 +526,11 @@ void Screens::drawWaiting(ScreenState &screen) {
   }
 
   // Authoritative signal from server -- StartGame over TCP
-  if (g.startGame) {
-    screen = ScreenState::Gameplay;
-    return;
-  }
+  // TODO: Implement proper TCP StartGame signal handling
+  // if (g.startGame) {
+  //   screen = ScreenState::Gameplay;
+  //   return;
+  // }
 
   // Fallback development mode: auto-start when player count >= 2
   if (playerCount >= 2) {

@@ -102,6 +102,10 @@ void Screens::drawSingleplayer(ScreenState& screen, SingleplayerForm& /*form*/) 
 // --- Local Singleplayer sandbox (Engine test) ---
 void Screens::initSingleplayerWorld() {
     if (_spInitialized) return;
+
+    // Load sound effects
+    loadSoundEffects();
+
     _spWorld = std::make_unique<rt::ecs::Registry>();
     // Systems
     _spWorld->addSystem(std::make_unique<rt::systems::PlayerControlSystem>());
@@ -229,6 +233,7 @@ void Screens::updateSingleplayerWorld(float dt) {
             float by = pp->y + 6.f;  // roughly center
             _spBullets.push_back({bx, by, _spBulletSpeed, 0.f, _spBulletW, _spBulletH});
             _spShootCooldown = _spShootInterval;
+            playShootSound(); // Play shooting sound effect
         }
     }
 
@@ -415,6 +420,8 @@ void Screens::updateSingleplayerWorld(float dt) {
                     // Enemy dies on hit: remove entity and from list
                     _spWorld->destroy(en.id);
                     _spEnemies.erase(_spEnemies.begin() + (long)ei);
+                    // Play explosion sound
+                    playExplosionSound();
                     // Award score: +50 per enemy killed
                     _score += 50;
                     // Spawn power-ups for any crossed thresholds
@@ -439,6 +446,8 @@ void Screens::updateSingleplayerWorld(float dt) {
                         _spBossActive = false;
                         _spBossAtStop = false;
                         _spBossSpawned = false;
+                        // Play explosion sound for boss defeat
+                        playExplosionSound();
                         _score += 1000;
                         _spBossThreshold += 15000;
                         _spSpawnTimer = _spNextSpawnDelay;
@@ -688,6 +697,8 @@ void Screens::spUpdatePowerups(float dt) {
                             if (onScreen) {
                                 _spWorld->destroy(en.id);
                                 _spEnemies.erase(_spEnemies.begin() + (long)ei);
+                                // Play explosion sound for each enemy cleared
+                                playExplosionSound();
                                 ++killed;
                                 continue;
                             }

@@ -160,6 +160,7 @@ void Screens::unloadGraphics() {
     UnloadTexture(_background);
     _backgroundLoaded = false;
   }
+  unloadSoundEffects();
 }
 
 Screens::~Screens() {
@@ -176,6 +177,7 @@ Screens::~Screens() {
       UnloadTexture(_background);
       _backgroundLoaded = false;
     }
+    unloadSoundEffects();
   }
 }
 

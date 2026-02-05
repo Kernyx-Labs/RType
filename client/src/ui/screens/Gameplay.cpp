@@ -21,6 +21,7 @@ void Screens::drawGameplay(ScreenState &screen) {
   ensureNetSetup();
   loadSprites();
   loadEnemySprites();
+  loadSoundEffects(); // Load sound effects for multiplayer
   // Keep the latest snapshot fresh
   pumpNetworkOnce();
   if (_serverReturnToMenu) {
@@ -95,8 +96,17 @@ void Screens::drawGameplay(ScreenState &screen) {
     _spHeat = 1.f;
 
   // Only send shoot input if not overheated (to mimic singleplayer feel)
-  if (isAlive && wantShoot && _spHeat > 0.f)
+  bool shootingThisFrame = (isAlive && wantShoot && _spHeat > 0.f);
+  if (shootingThisFrame) {
     bits |= rtype::net::InputShoot;
+    // Play shoot sound when player shoots (with simple throttling)
+    static float shootSoundCooldown = 0.f;
+    shootSoundCooldown -= GetFrameTime();
+    if (shootSoundCooldown <= 0.f) {
+      playShootSound();
+      shootSoundCooldown = 0.15f; // Throttle sound to ~6.67 times per second
+    }
+  }
 
   // Send inputs at ~30Hz
   double now = GetTime();

@@ -57,8 +57,13 @@ void Screens::handleNetPacket(const char *data, std::size_t n) {
         unsigned char type = kv.second.type;
         double ttl = (type == 2 /* Enemy */) ? _expireSecondsEnemy
                                              : _expireSecondsDefault;
-        if (missed >= _missThreshold && elapsed >= ttl)
+        if (missed >= _missThreshold && elapsed >= ttl) {
           toErase.push_back(id);
+          // Play explosion sound when an enemy is removed
+          if (type == 2) { // Enemy type
+            playExplosionSound();
+          }
+        }
       }
     }
     for (unsigned id : toErase) {
@@ -87,6 +92,12 @@ void Screens::handleNetPacket(const char *data, std::size_t n) {
       return;
     std::uint32_t entityId;
     std::memcpy(&entityId, p, sizeof(entityId));
+
+    // Play explosion sound if the despawned entity was an enemy
+    if (_entityById.count(entityId) && _entityById[entityId].type == 2) {
+      playExplosionSound();
+    }
+
     _entityById.erase(entityId);
     _missedById.erase(entityId);
     _lastSeenAt.erase(entityId);
