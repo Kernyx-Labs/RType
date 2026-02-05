@@ -1,6 +1,8 @@
 #include "../../include/client/ui/App.hpp"
 #include <raylib.h>
 #include <cmath>
+#include <vector>
+#include <string>
 using namespace client::ui;
 
 static void drawStarfield(float t) {
@@ -12,6 +14,74 @@ static void drawStarfield(float t) {
 }
 
 App::App() : _screen(ScreenState::Menu) {}
+
+App::~App() {
+    cleanupAudio();
+}
+
+void App::initAudio() {
+    InitAudioDevice();
+
+    if (!IsAudioDeviceReady()) {
+        Screens::logMessage("ERROR: Audio device failed to initialize!", "ERROR");
+        return;
+    }
+
+    Screens::logMessage("Audio device initialized successfully");
+    SetMasterVolume(1.0f); // Set master volume to 100%
+
+    // Try multiple paths for the background music
+    std::vector<std::string> musicPaths = {
+        "sound/Skeleton-Dance.mp3",
+        "client/sound/Skeleton-Dance.mp3",
+        "../client/sound/Skeleton-Dance.mp3",
+        "../../client/sound/Skeleton-Dance.mp3"
+    };
+
+    for (const auto& musicPath : musicPaths) {
+        Screens::logMessage("Trying music path: " + musicPath);
+        if (FileExists(musicPath.c_str())) {
+            Screens::logMessage("File found! Loading music stream...");
+            _backgroundMusic = LoadMusicStream(musicPath.c_str());
+
+            if (_backgroundMusic.stream.buffer == nullptr) {
+                Screens::logMessage("ERROR: Failed to load music stream", "ERROR");
+                continue;
+            }
+
+            _musicLoaded = true;
+            _backgroundMusic.looping = true; // Enable looping
+            SetMusicVolume(_backgroundMusic, 0.3f); // Set to 30% volume (reduced from 50%)
+            PlayMusicStream(_backgroundMusic);
+
+            Screens::logMessage("✓ Background music loaded and playing from: " + musicPath);
+            Screens::logMessage("  Music duration: " + std::to_string(GetMusicTimeLength(_backgroundMusic)) + " seconds");
+            return;
+        }
+    }
+
+    Screens::logMessage("WARNING: Background music file not found (tried multiple paths)", "WARN");
+}
+
+void App::updateAudio() {
+    if (_musicLoaded) {
+        UpdateMusicStream(_backgroundMusic);
+
+        // Check if music has stopped and restart it (loop)
+        if (!IsMusicStreamPlaying(_backgroundMusic)) {
+            PlayMusicStream(_backgroundMusic);
+        }
+    }
+}
+
+void App::cleanupAudio() {
+    if (_musicLoaded) {
+        StopMusicStream(_backgroundMusic);
+        UnloadMusicStream(_backgroundMusic);
+        _musicLoaded = false;
+    }
+    CloseAudioDevice();
+}
 
 void App::setAutoConnect(const std::string& host, const std::string& port, const std::string& name) {
     _form.serverAddress = host;
@@ -30,6 +100,9 @@ void App::run() {
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
 
+    // Initialize audio system and load background music
+    initAudio();
+
     _screens.loadBackground();
 
     // If CLI requested autoconnect, attempt it once after window init
@@ -42,6 +115,9 @@ void App::run() {
     while (!WindowShouldClose() && _screen != ScreenState::Exiting) {
         float dt = GetFrameTime();
         t += dt;
+
+        // Update music stream
+        updateAudio();
 
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (_screen == ScreenState::Menu) {

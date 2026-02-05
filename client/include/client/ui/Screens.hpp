@@ -333,6 +333,23 @@ private:
   bool _backgroundLoaded = false;
   float _bgScrollX = 0.0f; // accumulated scroll offset in pixels (scaled)
   float _bgSpeed = 60.0f;  // pixels per second, scrolling to the left
+
+  // --- Sound effects ---
+  static constexpr int MAX_SHOOT_SOUNDS = 8; // Pool size for overlapping sounds
+  Sound _shootSoundPool[MAX_SHOOT_SOUNDS]{};
+  int _nextShootSound = 0; // Round-robin index
+  bool _shootSoundLoaded = false;
+
+  static constexpr int MAX_EXPLOSION_SOUNDS = 8; // Pool size for overlapping explosion sounds
+  Sound _explosionSoundPool[MAX_EXPLOSION_SOUNDS]{};
+  int _nextExplosionSound = 0; // Round-robin index
+  bool _explosionSoundLoaded = false;
+
+  void loadSoundEffects();
+  void unloadSoundEffects();
+public:
+  void playShootSound();
+  void playExplosionSound();
 };
 
 } // namespace ui
