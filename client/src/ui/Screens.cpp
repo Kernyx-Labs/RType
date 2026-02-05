@@ -483,8 +483,7 @@ void Screens::drawWaiting(ScreenState &screen) {
 
   // Process inbound network data
   pumpNetworkOnce();
-  // TODO: Implement TCP StartGame signal processing
-  // pumpTcpOnce(); // NEW: process TCP StartGame signal
+  pumpTcpOnce(); // NEW: process TCP StartGame signal
 
   if (_serverReturnToMenu) {
     leaveSession();
@@ -526,11 +525,10 @@ void Screens::drawWaiting(ScreenState &screen) {
   }
 
   // Authoritative signal from server -- StartGame over TCP
-  // TODO: Implement proper TCP StartGame signal handling
-  // if (g.startGame) {
-  //   screen = ScreenState::Gameplay;
-  //   return;
-  // }
+  if (g.startGame) {
+    screen = ScreenState::Gameplay;
+    return;
+  }
 
   // Fallback development mode: auto-start when player count >= 2
   if (playerCount >= 2) {
