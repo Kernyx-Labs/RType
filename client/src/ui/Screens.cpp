@@ -122,6 +122,7 @@ Screens::~Screens() {
       _enemyLoaded = false;
     }
     unloadSoundEffects();
+    unloadFonts();
   }
 }
 
@@ -135,10 +136,12 @@ void Screens::unloadGraphics() {
     _enemyLoaded = false;
   }
   unloadSoundEffects();
+  unloadFonts();
 }
 
 void Screens::loadSoundEffects() {
-  if (_shootSoundLoaded) return;
+  if (_shootSoundLoaded)
+    return;
 
   // Try to find the shooting sound effect
   std::vector<std::string> candidates;
@@ -147,7 +150,7 @@ void Screens::loadSoundEffects() {
   candidates.emplace_back("../client/sound/Blaster-Shot.mp3");
   candidates.emplace_back("../../client/sound/Blaster-Shot.mp3");
 
-  for (const auto& path : candidates) {
+  for (const auto &path : candidates) {
     if (FileExists(path.c_str())) {
       _shootSound = LoadSound(path.c_str());
       if (_shootSound.frameCount > 0) {
@@ -178,134 +181,13 @@ void Screens::playShootSound() {
 
 // drawSingleplayer is implemented in screens/Singleplayer.cpp
 
-void Screens::drawMultiplayer(ScreenState &screen, MultiplayerForm &form) {
-  int w = GetScreenWidth();
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-  titleCentered("Multiplayer", (int)(h * 0.10f), (int)(h * 0.08f), RAYWHITE);
-  int formWidth = (int)(w * 0.60f);
-  int boxHeight = (int)(h * 0.08f);
-  int gapY = (int)(h * 0.06f);
-  int startY = (int)(h * 0.28f);
-  int x = (w - formWidth) / 2;
+// drawMultiplayer is implemented in screens/Multiplayer.cpp
 
-  Rectangle userBox = {(float)x, (float)startY, (float)formWidth,
-                       (float)boxHeight};
-  Rectangle addrBox = {(float)x, (float)(startY + (boxHeight + gapY)),
-                       (float)formWidth, (float)boxHeight};
-  Rectangle portBox = {(float)x, (float)(startY + 2 * (boxHeight + gapY)),
-                       (float)formWidth, (float)boxHeight};
+// drawOptions is implemented in screens/Options.cpp
 
-  if (inputBox(userBox, "Username", form.username, _focusedField == 0, baseFont,
-               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, false))
-    _focusedField = 0;
-  if (inputBox(addrBox, "Server address", form.serverAddress,
-               _focusedField == 1, baseFont, RAYWHITE, (Color){30, 30, 30, 200},
-               GRAY, false))
-    _focusedField = 1;
-  if (inputBox(portBox, "Port", form.serverPort, _focusedField == 2, baseFont,
-               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, true))
-    _focusedField = 2;
+// drawLeaderboard is implemented in screens/Leaderboard.cpp
 
-  if (IsKeyPressed(KEY_TAB))
-    _focusedField = (_focusedField + 1) % 3;
-
-  int btnWidth = (int)(w * 0.20f);
-  int btnHeight = (int)(h * 0.08f);
-  int btnY = (int)(portBox.y + portBox.height + gapY);
-  int btnGap = (int)(w * 0.02f);
-  int btnX = (w - (btnWidth * 2 + btnGap)) / 2;
-  bool canConnect = !form.username.empty() && !form.serverAddress.empty() &&
-                    !form.serverPort.empty();
-  Color connectBg =
-      canConnect ? (Color){120, 200, 120, 255} : (Color){80, 120, 80, 255};
-  Color connectHover =
-      canConnect ? (Color){150, 230, 150, 255} : (Color){90, 140, 90, 255};
-  if (button({(float)btnX, (float)btnY, (float)btnWidth, (float)btnHeight},
-             "Connect", baseFont, BLACK, connectBg, connectHover)) {
-    if (canConnect) {
-      logMessage("Connecting to " + form.serverAddress + ":" + form.serverPort +
-                     " as " + form.username,
-                 "INFO");
-      try {
-        // Store connection params
-        _username = form.username;
-        _serverAddr = form.serverAddress;
-        _serverPort = form.serverPort;
-        // Reset HUD/network-related state before connecting
-        _selfId = 0;
-        _playerLives = 4; // will be updated by Roster/LivesUpdate
-        _gameOver = false;
-        _otherPlayers.clear();
-        // TCP handshake to get UDP port
-        disconnectTcp();
-        if (!connectTcp()) {
-          _statusMessage = std::string("TCP connection failed.");
-          disconnectTcp();
-        } else {
-          // Setup UDP connection
-          teardownNet();
-          ensureNetSetup();
-          // Wait for roster/state packets
-          // No blocking wait!
-          _statusMessage = std::string("Connected. Waiting for server...");
-          _connected = true;
-          screen = ScreenState::Waiting;
-        }
-      } catch (const std::exception &e) {
-        logMessage(std::string("Exception: ") + e.what(), "ERROR");
-        _statusMessage = std::string("Error: ") + e.what();
-        teardownNet();
-        disconnectTcp();
-      }
-    }
-  }
-  if (button({(float)(btnX + btnWidth + btnGap), (float)btnY, (float)btnWidth,
-              (float)btnHeight},
-             "Back", baseFont, BLACK, LIGHTGRAY, GRAY)) {
-    screen = ScreenState::Menu;
-  }
-  if (!_statusMessage.empty()) {
-    titleCentered(_statusMessage.c_str(), (int)(h * 0.85f), baseFont, RAYWHITE);
-  }
-}
-
-void Screens::drawOptions() {
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-  titleCentered("Options", (int)(h * 0.10f), (int)(h * 0.08f), RAYWHITE);
-  titleCentered("Coming soon... Press ESC to go back.", (int)(h * 0.50f),
-                baseFont, RAYWHITE);
-}
-
-void Screens::drawLeaderboard() {
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-  titleCentered("Leaderboard", (int)(h * 0.10f), (int)(h * 0.08f), RAYWHITE);
-  titleCentered("Coming soon... Press ESC to go back.", (int)(h * 0.50f),
-                baseFont, RAYWHITE);
-}
-
-void Screens::drawNotEnoughPlayers(ScreenState &screen) {
-  int w = GetScreenWidth();
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-
-  titleCentered("Not enough players connected", (int)(h * 0.30f),
-                (int)(h * 0.09f), RAYWHITE);
-  titleCentered(
-      "Another player disconnected. You have been returned from the game.",
-      (int)(h * 0.42f), baseFont, LIGHTGRAY);
-
-  int btnWidth = (int)(w * 0.24f);
-  int btnHeight = (int)(h * 0.09f);
-  int x = (w - btnWidth) / 2;
-  int y = (int)(h * 0.60f);
-  if (button({(float)x, (float)y, (float)btnWidth, (float)btnHeight},
-             "Back to Menu", baseFont, BLACK, LIGHTGRAY, GRAY)) {
-    screen = ScreenState::Menu;
-  }
-}
+// drawNotEnoughPlayers is implemented in screens/NotEnoughPlayers.cpp
 
 void Screens::handleNetPacket(const char *data, std::size_t n) {
   if (!data || n < sizeof(rtype::net::Header))
@@ -473,69 +355,7 @@ void Screens::handleNetPacket(const char *data, std::size_t n) {
   }
 }
 
-void Screens::drawWaiting(ScreenState &screen) {
-  int w = GetScreenWidth();
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-
-  // Ensure sockets & TCP handshake are ready
-  ensureNetSetup();
-
-  // Process inbound network data
-  pumpNetworkOnce();
-  pumpTcpOnce(); // NEW: process TCP StartGame signal
-
-  if (_serverReturnToMenu) {
-    leaveSession();
-    screen = ScreenState::NotEnoughPlayers;
-    return;
-  }
-
-  // Count players based on latest state update from server
-  int playerCount = 0;
-  for (const auto &e : _entities) {
-    if (e.type == 1)
-      ++playerCount;
-  }
-
-  // UI
-  titleCentered("Waiting for players...", (int)(h * 0.25f), (int)(h * 0.08f),
-                RAYWHITE);
-  std::string sub = "Players connected: " + std::to_string(playerCount) + "/2";
-  titleCentered(sub.c_str(), (int)(h * 0.40f), baseFont, RAYWHITE);
-
-  int dots = ((int)(GetTime() * 2)) % 4;
-  std::string hint =
-      "The game will start automatically" + std::string(dots, '.');
-  titleCentered(hint.c_str(), (int)(h * 0.50f), baseFont, LIGHTGRAY);
-
-  // Cancel button
-  int btnWidth = (int)(w * 0.18f);
-  int btnHeight = (int)(h * 0.08f);
-  int x = (w - btnWidth) / 2;
-  int y = (int)(h * 0.70f);
-
-  if (button({(float)x, (float)y, (float)btnWidth, (float)btnHeight}, "Cancel",
-             baseFont, BLACK, LIGHTGRAY, GRAY)) {
-    teardownNet();
-    _connected = false;
-    _entities.clear();
-    screen = ScreenState::Menu;
-    return;
-  }
-
-  // Authoritative signal from server -- StartGame over TCP
-  if (g.startGame) {
-    screen = ScreenState::Gameplay;
-    return;
-  }
-
-  // Fallback development mode: auto-start when player count >= 2
-  if (playerCount >= 2) {
-    screen = ScreenState::Gameplay;
-    return;
-  }
-}
+// drawWaiting is implemented in screens/Waiting.cpp
 
 void Screens::drawGameplay(ScreenState &screen) {
   // Do not run gameplay if assets are missing; show message and bounce back to
@@ -543,11 +363,12 @@ void Screens::drawGameplay(ScreenState &screen) {
   if (!assetsAvailable()) {
     int h = GetScreenHeight();
     int baseFont = baseFontFromHeight(h);
+    Font font = getCurrentFont();
     titleCentered("Spritesheets not found.", (int)(h * 0.40f), (int)(h * 0.08f),
-                  RED);
+                  RED, font);
     titleCentered(
         "Place the sprites/ folder next to the executable then press ESC.",
-        (int)(h * 0.52f), baseFont, RAYWHITE);
+        (int)(h * 0.52f), baseFont, RAYWHITE, font);
     if (IsKeyPressed(KEY_ESCAPE)) {
       leaveSession();
       screen = ScreenState::Menu;
@@ -555,8 +376,9 @@ void Screens::drawGameplay(ScreenState &screen) {
     return;
   }
   if (!_connected) {
+    Font font = getCurrentFont();
     titleCentered("Not connected. Press ESC.", GetScreenHeight() * 0.5f, 24,
-                  RAYWHITE);
+                  RAYWHITE, font);
     return;
   }
   ensureNetSetup();
@@ -704,6 +526,7 @@ void Screens::drawGameplay(ScreenState &screen) {
   if (hudFont < 16)
     hudFont = 16;
   int margin = 16;
+  Font font = getCurrentFont();
 
   // Top area: show up to 3 teammates (exclude self), capping lives icons to 3
   int topY = margin;
@@ -712,8 +535,9 @@ void Screens::drawGameplay(ScreenState &screen) {
   for (size_t i = 0; i < _otherPlayers.size() && shown < 3; ++i, ++shown) {
     const auto &op = _otherPlayers[i];
     // Name
-    DrawText(op.name.c_str(), xCursor, topY, hudFont, RAYWHITE);
-    int nameW = MeasureText(op.name.c_str(), hudFont);
+    DrawTextEx(font, op.name.c_str(), {(float)xCursor, (float)topY}, (float)hudFont, 1.0f, RAYWHITE);
+    Vector2 textSize = MeasureTextEx(font, op.name.c_str(), (float)hudFont, 1.0f);
+    int nameW = (int)textSize.x;
     xCursor += nameW + 12;
     // Lives as small red squares (cap to 3)
     int iconSize = std::max(6, hudFont / 2 - 2);
@@ -731,7 +555,7 @@ void Screens::drawGameplay(ScreenState &screen) {
   // If more than 3 teammates, show overflow counter
   if (_otherPlayers.size() > 3) {
     std::string more = "x " + std::to_string(_otherPlayers.size() - 3);
-    DrawText(more.c_str(), xCursor, topY, hudFont, LIGHTGRAY);
+    DrawTextEx(font, more.c_str(), {(float)xCursor, (float)topY}, (float)hudFont, 1.0f, LIGHTGRAY);
   }
 
   // Height reserved by top area (no longer used for clamping player)
@@ -758,17 +582,19 @@ void Screens::drawGameplay(ScreenState &screen) {
 
   // Center: Score
   std::string scoreStr = "Score: " + std::to_string(_score);
-  int scoreW = MeasureText(scoreStr.c_str(), hudFont);
+  Vector2 scoreSize = MeasureTextEx(font, scoreStr.c_str(), (float)hudFont, 1.0f);
+  int scoreW = (int)scoreSize.x;
   int scoreX = (w - scoreW) / 2;
-  int textY = bottomY + (bottomBarH - hudFont) / 2;
-  DrawText(scoreStr.c_str(), scoreX, textY, hudFont, RAYWHITE);
+  int textY = bottomY + (bottomBarH - (int)scoreSize.y) / 2;
+  DrawTextEx(font, scoreStr.c_str(), {(float)scoreX, (float)textY}, (float)hudFont, 1.0f, RAYWHITE);
 
   // Right: Shot mode instead of Level
   const char *modeStr =
       (_shotMode == ShotMode::Normal) ? "Shot: Normal" : "Shot: Charge";
-  int modeW = MeasureText(modeStr, hudFont);
+  Vector2 modeSize = MeasureTextEx(font, modeStr, (float)hudFont, 1.0f);
+  int modeW = (int)modeSize.x;
   int modeX = w - margin - modeW;
-  DrawText(modeStr, modeX, textY, hudFont, (Color){200, 200, 80, 255});
+  DrawTextEx(font, modeStr, {(float)modeX, (float)textY}, (float)hudFont, 1.0f, (Color){200, 200, 80, 255});
 
   // Playable area bounds for drawing: between top bar and bottom bar
   int playableMinY = topReserved;
@@ -778,7 +604,7 @@ void Screens::drawGameplay(ScreenState &screen) {
 
   if (_entities.empty()) {
     titleCentered("Connecting to game...", (int)(GetScreenHeight() * 0.5f), 24,
-                  RAYWHITE);
+                  RAYWHITE, font);
   }
 
   // Render entities using persistent sprite-row assignment per player id
@@ -929,12 +755,12 @@ void Screens::drawGameplay(ScreenState &screen) {
   // Game Over overlay and input to return to menu (self dead but others alive)
   if (_gameOver && !everyoneDead) {
     DrawRectangle(0, 0, w, h, (Color){0, 0, 0, 180});
-    titleCentered("GAME OVER", (int)(h * 0.40f), (int)(h * 0.10f), RED);
+    titleCentered("GAME OVER", (int)(h * 0.40f), (int)(h * 0.10f), RED, font);
     std::string finalScore = "Score: " + std::to_string(_score);
     titleCentered(finalScore.c_str(), (int)(h * 0.52f), (int)(h * 0.06f),
-                  RAYWHITE);
+                  RAYWHITE, font);
     titleCentered("Press ESC to return to menu", (int)(h * 0.62f),
-                  (int)(h * 0.04f), LIGHTGRAY);
+                  (int)(h * 0.04f), LIGHTGRAY, font);
     if (IsKeyPressed(KEY_ESCAPE)) {
       teardownNet();
       _connected = false;
@@ -946,22 +772,4 @@ void Screens::drawGameplay(ScreenState &screen) {
   }
 }
 
-void Screens::drawGameOver(ScreenState &screen) {
-  int w = GetScreenWidth();
-  int h = GetScreenHeight();
-  int baseFont = baseFontFromHeight(h);
-  DrawRectangle(0, 0, w, h, (Color){0, 0, 0, 200});
-  titleCentered("ALL PLAYERS ARE DEAD", (int)(h * 0.32f), (int)(h * 0.10f),
-                RED);
-  std::string total = std::string("Total Score: ") + std::to_string(_score);
-  titleCentered(total.c_str(), (int)(h * 0.48f), (int)(h * 0.07f), RAYWHITE);
-  int btnWidth = (int)(w * 0.24f);
-  int btnHeight = (int)(h * 0.09f);
-  int x = (w - btnWidth) / 2;
-  int y = (int)(h * 0.65f);
-  if (button({(float)x, (float)y, (float)btnWidth, (float)btnHeight},
-             "Back to Menu", baseFont, BLACK, LIGHTGRAY, GRAY)) {
-    screen = ScreenState::Menu;
-    _gameOver = false;
-  }
-}
+// drawGameOver is implemented in screens/GameOver.cpp

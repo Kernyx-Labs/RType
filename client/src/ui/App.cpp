@@ -104,6 +104,7 @@ void App::run() {
     initAudio();
 
     _screens.loadBackground();
+    _screens.loadFonts();
 
     // If CLI requested autoconnect, attempt it once after window init
     if (_autoConnectPending) {

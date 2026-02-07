@@ -115,4 +115,56 @@ void Screens::playExplosionSound() {
     }
 }
 
+void Screens::loadFonts() {
+    if (_defaultFontLoaded && _customFontLoaded) return;
+
+    // Load default font (raylib's default font)
+    if (!_defaultFontLoaded) {
+        _defaultFont = GetFontDefault();
+        _defaultFontLoaded = true;
+        logMessage("Default font loaded");
+    }
+
+    // Try to find OpenDyslexic font
+    if (!_customFontLoaded) {
+        std::vector<std::string> candidates;
+        candidates.emplace_back("client/font/OpenDyslexic-Regular.otf");
+        candidates.emplace_back("../client/font/OpenDyslexic-Regular.otf");
+        candidates.emplace_back("../../client/font/OpenDyslexic-Regular.otf");
+        candidates.emplace_back("font/OpenDyslexic-Regular.otf");
+
+        for (const auto& path : candidates) {
+            if (FileExists(path.c_str())) {
+                // Load font at reasonable sizes for the game
+                _customFont = LoadFontEx(path.c_str(), 96, nullptr, 0);
+                if (_customFont.texture.id > 0) {
+                    _customFontLoaded = true;
+                    SetTextureFilter(_customFont.texture, TEXTURE_FILTER_BILINEAR);
+                    logMessage("OpenDyslexic font loaded from: " + path);
+                    return;
+                }
+            }
+        }
+        logMessage("Warning: OpenDyslexic font not found", "WARN");
+    }
+}
+
+void Screens::unloadFonts() {
+    if (_customFontLoaded) {
+        UnloadFont(_customFont);
+        _customFontLoaded = false;
+    }
+    // Note: we don't unload the default font as it's managed by raylib
+    _defaultFontLoaded = false;
+}
+
+void Screens::toggleFont() {
+    if (_customFontLoaded) {
+        _useCustomFont = !_useCustomFont;
+        logMessage(_useCustomFont ? "Switched to OpenDyslexic font" : "Switched to normal font");
+    } else {
+        logMessage("OpenDyslexic font not available", "WARN");
+    }
+}
+
 } } // namespace client::ui
