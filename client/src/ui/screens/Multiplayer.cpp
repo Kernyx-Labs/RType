@@ -25,7 +25,8 @@ void Screens::drawMultiplayer(ScreenState &screen, MultiplayerForm &form) {
   int w = GetScreenWidth();
   int h = GetScreenHeight();
   int baseFont = baseFontFromHeight(h);
-  titleCentered("Multiplayer", (int)(h * 0.10f), (int)(h * 0.08f), RAYWHITE);
+  Font font = getCurrentFont();
+  titleCentered("Multiplayer", (int)(h * 0.10f), (int)(h * 0.08f), RAYWHITE, font);
   int formWidth = (int)(w * 0.60f);
   int boxHeight = (int)(h * 0.08f);
   int gapY = (int)(h * 0.06f);
@@ -40,14 +41,14 @@ void Screens::drawMultiplayer(ScreenState &screen, MultiplayerForm &form) {
                        (float)formWidth, (float)boxHeight};
 
   if (inputBox(userBox, "Username", form.username, _focusedField == 0, baseFont,
-               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, false))
+               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, false, font))
     _focusedField = 0;
   if (inputBox(addrBox, "Server address", form.serverAddress,
                _focusedField == 1, baseFont, RAYWHITE, (Color){30, 30, 30, 200},
-               GRAY, false))
+               GRAY, false, font))
     _focusedField = 1;
   if (inputBox(portBox, "Port", form.serverPort, _focusedField == 2, baseFont,
-               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, true))
+               RAYWHITE, (Color){30, 30, 30, 200}, GRAY, true, font))
     _focusedField = 2;
 
   if (IsKeyPressed(KEY_TAB))
@@ -67,7 +68,7 @@ void Screens::drawMultiplayer(ScreenState &screen, MultiplayerForm &form) {
       canConnect ? (Color){150, 230, 150, 255} : (Color){90, 140, 90, 255};
   Rectangle connectBtn{(float)btnX, (float)btnY, (float)btnWidth,
                        (float)btnHeight};
-  if (button(connectBtn, "Connect", baseFont, BLACK, connectBg, connectHover)) {
+  if (button(connectBtn, "Connect", baseFont, BLACK, connectBg, connectHover, font)) {
     if (canConnect) {
       logMessage("Connecting to " + form.serverAddress + ":" + form.serverPort +
                      " as " + form.username,
@@ -107,13 +108,13 @@ void Screens::drawMultiplayer(ScreenState &screen, MultiplayerForm &form) {
   }
   Rectangle backBtn{(float)(btnX + btnWidth + btnGap), (float)btnY,
                     (float)btnWidth, (float)btnHeight};
-  if (button(backBtn, "Back", baseFont, BLACK, LIGHTGRAY, GRAY)) {
+  if (button(backBtn, "Back", baseFont, BLACK, LIGHTGRAY, GRAY, font)) {
     screen = ScreenState::Menu;
   }
   if (!_statusMessage.empty()) {
     // Place status above the bottom buttons to avoid overlap
     titleCentered(_statusMessage.c_str(), std::max(0, btnY - (int)(h * 0.06f)),
-                  baseFont, RAYWHITE);
+                  baseFont, RAYWHITE, font);
   }
 }
 

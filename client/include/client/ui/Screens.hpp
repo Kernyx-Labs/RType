@@ -78,6 +78,12 @@ public:
   bool hasBackground() const { return _backgroundLoaded; }
   // Allow changing scroll speed (pixels per second in scaled space)
   void setBackgroundSpeed(float pxPerSec) { _bgSpeed = pxPerSec; }
+  // Font management
+  void loadFonts();
+  void unloadFonts();
+  void toggleFont();
+  Font getCurrentFont() const { return _useCustomFont ? _customFont : _defaultFont; }
+  bool isUsingCustomFont() const { return _useCustomFont; }
 
 private:
   // --- Local Singleplayer test (engine sandbox) ---
@@ -340,13 +346,22 @@ private:
   int _nextShootSound = 0; // Round-robin index
   bool _shootSoundLoaded = false;
 
-  static constexpr int MAX_EXPLOSION_SOUNDS = 8; // Pool size for overlapping explosion sounds
+  static constexpr int MAX_EXPLOSION_SOUNDS =
+      8; // Pool size for overlapping explosion sounds
   Sound _explosionSoundPool[MAX_EXPLOSION_SOUNDS]{};
   int _nextExplosionSound = 0; // Round-robin index
   bool _explosionSoundLoaded = false;
 
   void loadSoundEffects();
   void unloadSoundEffects();
+
+  // --- Font management ---
+  Font _defaultFont{};
+  Font _customFont{};
+  bool _defaultFontLoaded = false;
+  bool _customFontLoaded = false;
+  bool _useCustomFont = false;
+
 public:
   void playShootSound();
   void playExplosionSound();
