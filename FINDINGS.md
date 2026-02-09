@@ -44,7 +44,7 @@ The codebase has a **solid ECS foundation** in the core engine but suffers from:
 
 ## Critical Issues
 
-### CRIT-001: Server Thread Race Conditions
+### CRIT-001: Server Thread Race Conditions (FIXED)
 
 **Severity:** Critical
 **Component:** Server
@@ -84,7 +84,7 @@ std::mutex stateMutex_;
 
 ---
 
-### CRIT-002: Server TCP Client Cleanup Race
+### CRIT-002: Server TCP Client Cleanup Race (FIXED)
 
 **Severity:** Critical
 **Component:** Server
@@ -107,7 +107,7 @@ The `clients_` set is modified from async callbacks while `stop()` (line 20) ite
 
 ---
 
-### CRIT-003: Client Dead Code and ODR Violation
+### CRIT-003: Client Dead Code and ODR Violation (FIXED)
 
 **Severity:** Critical
 **Component:** Client
@@ -136,7 +136,7 @@ The entire `Net.cpp` file is unreachable — all networking happens in `Screens.
 
 ---
 
-### CRIT-004: Game Tick and State Broadcast Desync
+### CRIT-004: Game Tick and State Broadcast Desync (FIXED)
 
 **Severity:** Critical
 **Component:** Server
@@ -163,7 +163,7 @@ These timers are **not synchronized** — state snapshots don't align with game 
 
 ## High Priority Issues
 
-### HIGH-001: Engine Game Layer Coupled to Protocol
+### HIGH-001: Engine Game Layer Coupled to Protocol (FIXED)
 
 **Severity:** High
 **Component:** Engine

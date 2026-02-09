@@ -17,6 +17,8 @@ add_library(rtype_engine
     src/components/Player.cpp
     src/components/Size.cpp
     src/components/Collided.cpp
+    src/components/Music.cpp
+    src/components/SoundEffect.cpp
     # Systems
     src/systems/MovementSystem.cpp
     src/systems/PlayerControlSystem.cpp
